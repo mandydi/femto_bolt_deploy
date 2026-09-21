@@ -1,0 +1,6 @@
+FROM orbbec-femto-bolt:humble
+RUN sed -i 's|Types: deb deb-src|Types: deb|g' /etc/apt/sources.list.d/ros2.sources && \
+    sed -i 's|http://packages.ros.org/ros2/ubuntu|http://mirrors.tuna.tsinghua.edu.cn/ros2/ubuntu|g' /etc/apt/sources.list.d/ros2.sources && \
+    apt-get update && \
+    DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends ros-humble-rviz2 && \
+    rm -rf /var/lib/apt/lists/*

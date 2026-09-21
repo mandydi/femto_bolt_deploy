@@ -1,0 +1,25 @@
+# 过滤 Docker 镜像包与离线大文件（极其重要，避免传爆 Git）
+*.tar
+*.tar.gz
+*.tar.xz
+*.zip
+
+# 运行时测试产生的图片与临时文件
+*.jpg
+*.jpeg
+*.png
+!assets/*.png
+!docs/*.png
+
+# ROS2 编译产物与 Python 缓存
+build/
+install/
+log/
+__pycache__/
+*.pyc
+*.pyo
+
+# IDE 与系统文件
+.vscode/
+.idea/
+.DS_Store
