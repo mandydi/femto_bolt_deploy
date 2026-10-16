@@ -112,3 +112,21 @@ Femto Bolt SDK 的 depthengine 链接 `libEGL.so.1`，镜像已补齐 Mesa/EGL �
   3. 提取指定近距离范围内最近物体的表面法向量及相机三维坐标 `(X, Y, Z)`；
   4. 支持与机械臂抓取/吸盘位姿控制协议（如 ASCS 协议）对接。
 
+
+## 6. 顺丰智能分拣视觉感知系统与 ROS 2 跨机服务架构
+
+已完成全链路闭环研发与实机部署验证：
+- **完整系统技术架构与沉淀文档**：请参阅 [SF_SORTING_ARCHITECTURE.md](SF_SORTING_ARCHITECTURE.md)
+- **多相机开机自启动与 SOP 指南**：请参阅 [CAMERA_DEPLOYMENT_SOP.md](CAMERA_DEPLOYMENT_SOP.md)
+- **服务管理**：
+  \\\ash
+  # 启动后台常驻分拣服务 (sf_sorting_server)
+  bash deploy.sh server start
+  # 查看运行日志与状态
+  bash deploy.sh server logs
+  bash deploy.sh server status
+  \\\
+- **ROS 2 跨机调用客户端**：
+  - 局域网任意工控机（同一 \ROS_DOMAIN_ID=0\）均可直接调用服务端提供的标准 Trigger 服务 \/sf_sorting/get_result\
+  - 异机调用脚本：\ash call_sorting_client.sh\ 或 \python3 test_sorting_client.py\
+  - 返回 JSON 载荷包含目标类别、三维抓取点 \(X, Y, Z)\、四边形 3D 边界点、空间平面拟合方程与倾斜角 \	heta_x, theta_y\。
