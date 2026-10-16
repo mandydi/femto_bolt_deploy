@@ -101,3 +101,14 @@ Femto Bolt SDK 的 depthengine 链接 `libEGL.so.1`，镜像已补齐 Mesa/EGL �
 - 型号参数：本仓库 `orbbec_camera/launch/femto_bolt.launch.py`
 - [ROS 2 Humble 官方安装说明（Ubuntu 22.04）](https://docs.ros.org/en/humble/Installation/Ubuntu-Install-Debs.html)
 - [Orbbec 官方仓库](https://github.com/orbbec/OrbbecSDK_ROS2)
+
+## 5. 顺丰现场集成：3D 点云识别与法向量提取 (`sf_sorting`)
+
+现场配套集成了包裹分拣的 3D 点云识别流水线：
+- **位置**：`sf_sorting/SFsorting.py`
+- **主要功能**：
+  1. 订阅 Femto Bolt 发布的点云与图像话题；
+  2. 结合 YOLO 实例分割与深度点云，定位目标包裹表面；
+  3. 提取指定近距离范围内最近物体的表面法向量及相机三维坐标 `(X, Y, Z)`；
+  4. 支持与机械臂抓取/吸盘位姿控制协议（如 ASCS 协议）对接。
+

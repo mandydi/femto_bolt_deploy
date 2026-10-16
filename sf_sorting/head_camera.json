@@ -1,0 +1,27 @@
+{
+  "version": "0.4.36",
+  "flags": {},
+  "shapes": [
+    {
+      "label": "1",
+      "text": "",
+      "points": [
+        [
+          445.0602409638555,
+          42.168674698795215
+        ],
+        [
+          931.8072289156627,
+          690.843373493976
+        ]
+      ],
+      "group_id": null,
+      "shape_type": "rectangle",
+      "flags": {}
+    }
+  ],
+  "imagePath": "head_camera.jpg",
+  "imageData": null,
+  "imageHeight": 720,
+  "imageWidth": 1280
+}
