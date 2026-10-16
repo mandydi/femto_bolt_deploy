@@ -1,52 +1,31 @@
 #!/usr/bin/env bash
 # =========================================================
-# 一键从 Orbbec Femto Bolt 容器中提取并保存当前头部相机 4K RGB 图像
+# 一键单帧画面采集脚本:
+# 采集 1 帧 4K RGB、D2C 深度图、三维点云并退出
+# 保存路径: /home/caseim/femto_bolt_deploy/captured_frame/
+# 分为三个子文件夹: rgb/ , depth/ , point/
+# 命名自动自增: 000001.png, 000002.png ...
 # =========================================================
-SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
-OUT_FILE="${1:-$SCRIPT_DIR/head_camera.jpg}"
+set -e
 
-echo "正在从 ROS 话题中提取头部相机当前 4K 画面..."
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+OUT_DIR="/home/caseim/femto_bolt_deploy/captured_frame"
 
-cat << 'INNER_EOF' | docker exec -i orbbec-femto-bolt /opt/femto/entrypoint.sh python3
-import rclpy
-from rclpy.node import Node
-from sensor_msgs.msg import CompressedImage
-from rclpy.qos import QoSProfile, ReliabilityPolicy, DurabilityPolicy
-import sys
+# 退出信号捕获
+cleanup() {
+    docker exec orbbec-femto-bolt pkill -9 -f save_dataset 2>/dev/null || true
+}
+trap cleanup EXIT INT TERM
 
-class Saver(Node):
-    def __init__(self):
-        super().__init__('head_cam_saver_4k')
-        qos = QoSProfile(
-            reliability=ReliabilityPolicy.RELIABLE,
-            durability=DurabilityPolicy.VOLATILE,
-            depth=1
-        )
-        self.sub = self.create_subscription(
-            CompressedImage,
-            '/vision/top_camera/color/image_raw/compressed',
-            self.cb,
-            qos
-        )
+# 启动前清理任何可能残留的旧采集进程
+docker exec orbbec-femto-bolt pkill -9 -f save_dataset 2>/dev/null || true
 
-    def cb(self, msg):
-        with open('/tmp/head_camera.jpg', 'wb') as f:
-            f.write(bytes(msg.data))
-        sys.exit(0)
+mkdir -p "$OUT_DIR/rgb" "$OUT_DIR/depth" "$OUT_DIR/point"
 
-rclpy.init()
-node = Saver()
-try:
-    rclpy.spin(node)
-except (SystemExit, KeyboardInterrupt):
-    pass
-rclpy.shutdown()
-INNER_EOF
+echo "========================================================="
+echo "执行单帧画面采集 (4K RGB + 16-bit D2C深度 + 三维点云)..."
+echo "保存目录: ${OUT_DIR}"
+echo "========================================================="
 
-docker cp orbbec-femto-bolt:/tmp/head_camera.jpg "$OUT_FILE" 2>/dev/null
-if [ -s "$OUT_FILE" ]; then
-    sz=$(ls -lh "$OUT_FILE" | awk '{print $5}')
-    echo "[OK] 头部相机 4K 图像保存成功: $OUT_FILE ($sz)"
-else
-    echo "[FAIL] 保存失败，请确认 orbbec-femto-bolt 容器正在运行且话题正在发布！"
-fi
+docker cp "$SCRIPT_DIR/save_dataset_single.py" orbbec-femto-bolt:/opt/femto/save_dataset_single.py
+docker exec -t orbbec-femto-bolt /opt/femto/entrypoint.sh python3 /opt/femto/save_dataset_single.py /home/caseim/yolo26_packet/captured_frame

@@ -78,16 +78,74 @@ case "${1:-help}" in
     detect)
         docker_cmd exec "$CONTAINER" /opt/femto/entrypoint.sh python3 /home/caseim/yolo26_packet/test_yolo_detection.py "${@:2}"
         ;;
+    location)
+        [[ -f "$SCRIPT_DIR/aruco_location.py" ]] || fail "Missing aruco_location.py"
+        [[ -f "$SCRIPT_DIR/aruco_reference.json" ]] || fail "Missing aruco_reference.json"
+        docker_cmd cp "$SCRIPT_DIR/aruco_location.py" "$CONTAINER:/tmp/aruco_location.py"
+        docker_cmd cp "$SCRIPT_DIR/aruco_reference.json" "$CONTAINER:/tmp/aruco_reference.json"
+        docker_cmd exec "$CONTAINER" /opt/femto/entrypoint.sh python3 -u /tmp/aruco_location.py \
+            --reference /tmp/aruco_reference.json "${@:2}"
+        ;;
     sorting)
         if [[ -d "$SF_DIR" ]]; then
+            mount_args=()
+            if [[ -d "$YOLO_DIR" ]]; then mount_args+=(-v "$YOLO_DIR:/home/caseim/yolo26_packet"); fi
+            if [[ -d "$SF_DIR" ]]; then mount_args+=(-v "$SF_DIR:/home/caseim/SF_sorting0916"); fi
             tty_arg=$(get_tty_args)
-            docker_cmd run --rm $tty_arg "${usb_args[@]}" \
-                -v "$SF_DIR:/home/caseim/SF_sorting0916" \
+            docker_cmd run --rm $tty_arg "${usb_args[@]}" "${mount_args[@]}" \
                 -w /home/caseim/SF_sorting0916 \
                 "$IMAGE" /opt/femto/entrypoint.sh python3 SFsorting.py "${@:2}"
         else
             fail "Directory SF_sorting0916 not found."
         fi
+        ;;
+    server|sorting_server|sorting-server)
+        action="${2:-start}"
+        srv_container="sf_sorting_server"
+        case "$action" in
+            start)
+                if docker_cmd container inspect "$srv_container" >/dev/null 2>&1; then
+                    docker_cmd rm -f "$srv_container" >/dev/null 2>&1 || true
+                fi
+                mount_args=()
+                if [[ -d "$YOLO_DIR" ]]; then mount_args+=(-v "$YOLO_DIR:/home/caseim/yolo26_packet"); fi
+                if [[ -d "$SF_DIR" ]]; then mount_args+=(-v "$SF_DIR:/home/caseim/SF_sorting0916"); fi
+                docker_cmd run -d --name "$srv_container" --restart unless-stopped \
+                    --log-opt max-size=10m --log-opt max-file=3 \
+                    "${usb_args[@]}" "${mount_args[@]}" \
+                    -w /home/caseim/SF_sorting0916 \
+                    "$IMAGE" /opt/femto/entrypoint.sh python3 SFsorting.py --mode service "${@:3}"
+                echo "顺丰分拣服务 (sf_sorting_server) 已在后台启动成功！"
+                echo "查看日志: bash deploy.sh server logs"
+                echo "客户端调用: bash deploy.sh server client"
+                ;;
+            stop)
+                docker_cmd rm -f "$srv_container" >/dev/null 2>&1 || true
+                echo "顺丰分拣服务已停止。"
+                ;;
+            status)
+                docker_cmd ps -a --filter "name=^/${srv_container}$"
+                ;;
+            logs)
+                docker_cmd logs --tail 100 -f "$srv_container"
+                ;;
+            client|test)
+                docker_cmd run --rm "${usb_args[@]}" \
+                    -v "$SF_DIR:/home/caseim/SF_sorting0916" \
+                    -w /home/caseim/SF_sorting0916 \
+                    "$IMAGE" /opt/femto/entrypoint.sh ros2 service call /sf_sorting/get_result std_srvs/srv/Trigger "{}"
+                ;;
+            run)
+                tty_arg=$(get_tty_args)
+                docker_cmd run --rm $tty_arg "${usb_args[@]}" \
+                    -v "$SF_DIR:/home/caseim/SF_sorting0916" \
+                    -w /home/caseim/SF_sorting0916 \
+                    "$IMAGE" /opt/femto/entrypoint.sh python3 SFsorting.py --mode service "${@:3}"
+                ;;
+            *)
+                echo "Usage: bash deploy.sh server {start|stop|status|logs|client|run}"
+                ;;
+        esac
         ;;
     bash)
         mount_args=()
@@ -124,6 +182,6 @@ case "${1:-help}" in
         docker_cmd rm -f "$CONTAINER"
         ;;
     *)
-        echo "Usage: bash deploy.sh {devices|start SERIAL [DOMAIN]|verify|detect|sorting|bash|rviz|topics|logs|status|stop|resume|remove}"
+        echo "Usage: bash deploy.sh {devices|start SERIAL [DOMAIN]|verify|detect|location [--watch]|sorting|server|bash|rviz|topics|logs|status|stop|resume|remove}"
         ;;
 esac
