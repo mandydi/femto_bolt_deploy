@@ -248,7 +248,7 @@ def get_prism_inlier_from_ply(
 
     if isinstance(ply_source, np.ndarray):
         pts_all = ply_source
-        if voxel_mm > 0 and len(pts_all) > 0:
+        if voxel_mm > 0.0 and len(pts_all) > 0:
             pts_all = numpy_voxel_downsample(pts_all, voxel_mm)
     else:
         pts_all = load_downsampled_ply(ply_source, voxel_mm)
@@ -510,18 +510,19 @@ def process_one_sample(
     return best_label, min_xyz, quad_3d, plane_info
 
 
-def extract_pointcloud2_xyz_m(cloud_msg):
+def extract_pointcloud2_xyz_m(cloud_msg, stride=24):
     """
     高效解析 ROS2 sensor_msgs/PointCloud2 消息中的 (x, y, z)，单位：米 (m)
+    stride: 步长采样 (默认24)，将463万点快速缩减为~19万点，避免耗时的全量内存拷贝与无效反投影计算
     """
     num_points = cloud_msg.width * cloud_msg.height
     if num_points == 0 or len(cloud_msg.data) == 0:
         return np.empty((0, 3), dtype=np.float32)
-    raw_bytes = np.frombuffer(cloud_msg.data, dtype=np.uint8)
     step = cloud_msg.point_step
+    raw_bytes = np.frombuffer(cloud_msg.data, dtype=np.uint8)
     raw_reshaped = raw_bytes[:num_points * step].reshape((num_points, step))
-    # 点云 x, y, z 位于前 12 字节（float32，单位米）
-    pts_m = np.ascontiguousarray(raw_reshaped[:, :12]).view(np.float32).reshape((num_points, 3))
+    sampled_rows = raw_reshaped[::stride, :12] if stride > 1 else raw_reshaped[:, :12]
+    pts_m = np.ascontiguousarray(sampled_rows).view(np.float32).reshape((-1, 3))
     valid_mask = np.isfinite(pts_m).all(axis=1) & (pts_m[:, 2] > 0.01)
     return pts_m[valid_mask]
 
@@ -552,11 +553,26 @@ class SFSortingROS2Node:
         self.latest_result = None
 
         self.node = rclpy.create_node('sf_sorting_subscriber_node')
-        qos = QoSProfile(reliability=ReliabilityPolicy.RELIABLE, durability=DurabilityPolicy.VOLATILE, depth=5)
+        # 内存预加载 mask
+        self.mask_arr = None
+        if os.path.exists(self.mask_path):
+            self.mask_arr = cv2.imread(self.mask_path, cv2.IMREAD_GRAYSCALE)
+            if self.mask_arr is not None:
+                self.mask_arr = (self.mask_arr > 0).astype(np.uint8) * 255
 
-        self.sub_rgb = message_filters.Subscriber(self.node, Image, '/vision/top_camera/rgb', qos_profile=qos)
-        self.sub_depth = message_filters.Subscriber(self.node, Image, '/vision/top_camera/depth', qos_profile=qos)
-        self.sub_points = message_filters.Subscriber(self.node, PointCloud2, '/vision/top_camera/points', qos_profile=qos)
+        # 内存预热 YOLO 模型
+        try:
+            from predict_yolo import get_model
+            model = get_model()
+            dummy_img = np.zeros((640, 640, 3), dtype=np.uint8)
+            _ = model.predict(source=dummy_img, device="cpu", imgsz=1280, verbose=False)
+            print("[*] YOLO 模型预热完成!", flush=True)
+        except Exception as e:
+            print(f"[WARN] YOLO 预热跳过: {e}", flush=True)
+
+        self.sub_rgb = message_filters.Subscriber(self.node, Image, '/vision/top_camera/rgb', qos_profile=10)
+        self.sub_depth = message_filters.Subscriber(self.node, Image, '/vision/top_camera/depth', qos_profile=10)
+        self.sub_points = message_filters.Subscriber(self.node, PointCloud2, '/vision/top_camera/points', qos_profile=10)
 
         self.sync = message_filters.ApproximateTimeSynchronizer(
             [self.sub_rgb, self.sub_depth, self.sub_points],
@@ -589,8 +605,8 @@ class SFSortingROS2Node:
             # 2. 转换深度图 (16UC1 -> mm float32)
             depth_np = np.frombuffer(depth_msg.data, dtype=np.uint16).reshape((depth_msg.height, depth_msg.width)).astype(np.float32)
 
-            # 3. 转换点云 (米 m)
-            pts_m = extract_pointcloud2_xyz_m(points_msg)
+            # 3. 转换点云 (米 m, 步长采样)
+            pts_m = extract_pointcloud2_xyz_m(points_msg, stride=36)
             print(f"  有效点云点数 (>0.01m): {len(pts_m)}")
 
             # 4. YOLO 目标检测
@@ -606,10 +622,10 @@ class SFSortingROS2Node:
                 ply_path=pts_m,
                 fx=self.fx, fy=self.fy, cx=self.cx, cy=self.cy,
                 dist_coeffs=self.dist_coeffs,
-                mask_path=self.mask_path,
+                mask_path=self.mask_arr if self.mask_arr is not None else self.mask_path,
                 shapes_list=yolo_list,
                 z_prism_offset=self.z_offset,
-                voxel_mm=0.005
+                voxel_mm=0.0
             )
 
             if min_xyz is not None:
@@ -663,12 +679,28 @@ class SFSortingServerNode:
 
         self.cb_group = ReentrantCallbackGroup()
         self.node = rclpy.create_node('sf_sorting_server_node')
-        qos = QoSProfile(reliability=ReliabilityPolicy.RELIABLE, durability=DurabilityPolicy.VOLATILE, depth=5)
 
-        # 订阅相机实时话题
-        self.sub_rgb = message_filters.Subscriber(self.node, Image, '/vision/top_camera/rgb', qos_profile=qos, callback_group=self.cb_group)
-        self.sub_depth = message_filters.Subscriber(self.node, Image, '/vision/top_camera/depth', qos_profile=qos, callback_group=self.cb_group)
-        self.sub_points = message_filters.Subscriber(self.node, PointCloud2, '/vision/top_camera/points', qos_profile=qos, callback_group=self.cb_group)
+        # 内存预加载 mask
+        self.mask_arr = None
+        if os.path.exists(self.mask_path):
+            self.mask_arr = cv2.imread(self.mask_path, cv2.IMREAD_GRAYSCALE)
+            if self.mask_arr is not None:
+                self.mask_arr = (self.mask_arr > 0).astype(np.uint8) * 255
+
+        # 内存预热 YOLO 模型
+        try:
+            from predict_yolo import get_model
+            model = get_model()
+            dummy_img = np.zeros((640, 640, 3), dtype=np.uint8)
+            _ = model.predict(source=dummy_img, device="cpu", imgsz=1280, verbose=False)
+            print("[*] YOLO 模型预热完成!", flush=True)
+        except Exception as e:
+            print(f"[WARN] YOLO 预热跳过: {e}", flush=True)
+
+        # 订阅相机实时话题 (采用标准 depth=10 避免 ROS2 message_filters QoS 丢包)
+        self.sub_rgb = message_filters.Subscriber(self.node, Image, '/vision/top_camera/rgb', qos_profile=10, callback_group=self.cb_group)
+        self.sub_depth = message_filters.Subscriber(self.node, Image, '/vision/top_camera/depth', qos_profile=10, callback_group=self.cb_group)
+        self.sub_points = message_filters.Subscriber(self.node, PointCloud2, '/vision/top_camera/points', qos_profile=10, callback_group=self.cb_group)
 
         self.sync = message_filters.ApproximateTimeSynchronizer(
             [self.sub_rgb, self.sub_depth, self.sub_points],
@@ -699,13 +731,13 @@ class SFSortingServerNode:
         t0 = time.time()
         print(f"\n[Service 请求] 收到 /sf_sorting/get_result 调用请求...", flush=True)
 
-        # 等待最新对齐帧
-        timeout = 5.0
+        # 获取最新对齐帧 (由于后台持续以 3.3Hz 实时刷新，内存中已有最新帧时直接处理，零等待)
         start_wait = time.time()
-        while self.latest_frame is None or (time.time() - self.latest_frame_time > 3.0):
-            time.sleep(0.05)
-            if time.time() - start_wait > timeout:
+        while self.latest_frame is None:
+            time.sleep(0.01)
+            if time.time() - start_wait > 2.0:
                 break
+        t_wait = time.time() - start_wait
 
         if self.latest_frame is None:
             err_msg = "获取相机画面超时，未收到 /vision/top_camera 话题帧"
@@ -728,6 +760,7 @@ class SFSortingServerNode:
         rgb_msg, depth_msg, points_msg = self.latest_frame
 
         try:
+            t1 = time.time()
             # 1. 转换彩色图 (rgb8 -> BGR)
             if rgb_msg.encoding == 'rgb8':
                 rgb_arr = np.frombuffer(rgb_msg.data, dtype=np.uint8).reshape((rgb_msg.height, rgb_msg.width, 3))
@@ -740,15 +773,19 @@ class SFSortingServerNode:
             # 2. 转换深度图 (16UC1 -> mm float32)
             depth_np = np.frombuffer(depth_msg.data, dtype=np.uint16).reshape((depth_msg.height, depth_msg.width)).astype(np.float32)
 
-            # 3. 转换点云 (米 m)
-            pts_m = extract_pointcloud2_xyz_m(points_msg)
+            # 3. 转换点云 (米 m, 步长采样直接提取)
+            pts_m = extract_pointcloud2_xyz_m(points_msg, stride=36)
+            t_parse = time.time() - t1
 
-            # 4. YOLO 目标检测
+            # 4. YOLO 目标检测 (内存直接推理)
+            t2 = time.time()
             from predict_yolo import yoloDetect
             yolo_list = yoloDetect(bgr_img)
-            print(f"  YOLO 检测完成，共识别 {len(yolo_list)} 个包裹目标", flush=True)
+            t_yolo = time.time() - t2
+            print(f"  YOLO 检测完成，共识别 {len(yolo_list)} 个包裹目标 (耗时 {t_yolo*1000:.1f}ms)", flush=True)
 
             # 5. 执行平面拟合与抓取点定位
+            t3 = time.time()
             clear_ply_cache()
             best_label, min_xyz, quad_3d, plane_info = process_one_sample(
                 png_path=bgr_img,
@@ -756,13 +793,15 @@ class SFSortingServerNode:
                 ply_path=pts_m,
                 fx=self.fx, fy=self.fy, cx=self.cx, cy=self.cy,
                 dist_coeffs=self.dist_coeffs,
-                mask_path=self.mask_path,
+                mask_path=self.mask_arr if self.mask_arr is not None else self.mask_path,
                 shapes_list=yolo_list,
                 z_prism_offset=self.z_offset,
-                voxel_mm=0.005
+                voxel_mm=0.0
             )
+            t_fit = time.time() - t3
 
             total_cost = time.time() - t0
+            print(f"  [响应耗时明细] 等待帧: {t_wait*1000:.1f}ms | 转换: {t_parse*1000:.1f}ms | YOLO: {t_yolo*1000:.1f}ms | 3D拟合: {t_fit*1000:.1f}ms | 总响应: {total_cost:.3f}s", flush=True)
             if min_xyz is not None:
                 print(f"  --> 计算成功! 目标类别: {best_label}", flush=True)
                 print(f"      z最小坐标: x={min_xyz[0]:.2f}, y={min_xyz[1]:.2f}, z={min_xyz[2]:.2f} mm", flush=True)
@@ -904,14 +943,21 @@ if __name__ == "__main__":
         print(f"PLY:   {ply_file}")
         print(f"Mask:  {args.mask}")
 
-        from predict_yolo import yoloDetect
-        yolo_list = yoloDetect(png_file)
-        print(f"YOLO 检测完成，共识别 {len(yolo_list)} 个目标")
+        t_f0 = time.time()
+        bgr_img = cv2.imread(png_file)
+        depth_np = cv2.imread(depth_file, cv2.IMREAD_UNCHANGED).astype(np.float32)
 
+        from predict_yolo import yoloDetect
+        t_y0 = time.time()
+        yolo_list = yoloDetect(bgr_img)
+        t_yolo = time.time() - t_y0
+        print(f"YOLO 检测完成，共识别 {len(yolo_list)} 个目标 (耗时 {t_yolo*1000:.1f}ms)")
+
+        t_c0 = time.time()
         clear_ply_cache()
         best_label, min_xyz, quad_3d, plane_info = process_one_sample(
-            png_path=png_file,
-            depth_path=depth_file,
+            png_path=bgr_img,
+            depth_path=depth_np,
             ply_path=ply_file,
             fx=fx, fy=fy, cx=cx, cy=cy,
             dist_coeffs=dist_coeffs,
@@ -920,6 +966,11 @@ if __name__ == "__main__":
             z_prism_offset=args.z_offset,
             voxel_mm=0.005
         )
+        t_fit = time.time() - t_c0
+        print(f"=== 处理耗时明细 ===")
+        print(f"YOLO 检测耗时: {t_yolo*1000:.1f} ms")
+        print(f"3D平面拟合耗时: {t_fit*1000:.1f} ms")
+        print(f"全流程总耗时:   {(time.time()-t_f0)*1000:.1f} ms")
 
         print("\n===== 拟合结果 =====")
         print(f"最优目标类别: {best_label}")

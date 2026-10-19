@@ -151,8 +151,7 @@ case "${1:-help}" in
         mount_args=()
         if [[ -d "$YOLO_DIR" ]]; then mount_args+=(-v "$YOLO_DIR:/home/caseim/yolo26_packet"); fi
         if [[ -d "$SF_DIR" ]]; then mount_args+=(-v "$SF_DIR:/home/caseim/SF_sorting0916"); fi
-        tty_arg=$(get_tty_args)
-        docker_cmd run --rm $tty_arg "${usb_args[@]}" "${mount_args[@]}" -w /home/caseim "$IMAGE" bash
+        docker_cmd run --rm -it "${usb_args[@]}" "${mount_args[@]}" -w /home/caseim/SF_sorting0916 "$IMAGE" /opt/femto/entrypoint.sh bash
         ;;
     rviz)
         if [[ -f "$SCRIPT_DIR/run_rviz.sh" ]]; then
