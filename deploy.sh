@@ -39,6 +39,33 @@ get_tty_args() {
     fi
 }
 
+run_sorting_client() {
+    local mode="$1"
+    shift || true
+    local client_py=""
+    if [[ -f "$SCRIPT_DIR/test_sorting_client.py" ]]; then
+        client_py="$SCRIPT_DIR/test_sorting_client.py"
+    elif [[ -f "$SF_DIR/test_sorting_client.py" ]]; then
+        client_py="$SF_DIR/test_sorting_client.py"
+    else
+        fail "test_sorting_client.py 未找到 (路径: $SCRIPT_DIR 或 $SF_DIR)"
+    fi
+
+    if [[ "$mode" == "client" ]]; then
+        # 实际工程生产调用: 纯净输出标准 JSON，无任何多余控制字符
+        docker_cmd run --rm -i --network host --ipc host -e ROS_DOMAIN_ID="${ROS_DOMAIN_ID:-0}" \
+            -v "$client_py:/tmp/test_sorting_client.py:ro" \
+            "$IMAGE" /opt/femto/entrypoint.sh python3 /tmp/test_sorting_client.py --json "$@"
+    else
+        # 测试与性能诊断: 打印完整的端到端耗时分解 (RTT, YOLO, 3D拟合, 等待帧) 与目标坐标
+        local tty_arg
+        tty_arg=$(get_tty_args)
+        docker_cmd run --rm $tty_arg --network host --ipc host -e ROS_DOMAIN_ID="${ROS_DOMAIN_ID:-0}" \
+            -v "$client_py:/tmp/test_sorting_client.py:ro" \
+            "$IMAGE" /opt/femto/entrypoint.sh python3 /tmp/test_sorting_client.py "$@"
+    fi
+}
+
 case "${1:-help}" in
     devices)
         docker_cmd run --rm "${usb_args[@]}" "$IMAGE" ros2 run orbbec_camera list_devices_node
@@ -115,9 +142,15 @@ case "${1:-help}" in
                     "${usb_args[@]}" "${mount_args[@]}" \
                     -w /home/caseim/SF_sorting0916 \
                     "$IMAGE" /opt/femto/entrypoint.sh python3 SFsorting.py --mode service "${@:3}"
-                echo "顺丰分拣服务 (sf_sorting_server) 已在后台启动成功！"
-                echo "查看日志: bash deploy.sh server logs"
-                echo "客户端调用: bash deploy.sh server client"
+                echo "=========================================================="
+                echo "🚀 顺丰分拣常驻服务 (sf_sorting_server) 已启动成功！"
+                echo "=========================================================="
+                echo "  • 查看实时日志: bash deploy.sh server logs"
+                echo "  • 测试性能诊断: bash deploy.sh server test"
+                echo "  • 生产工程调用: bash deploy.sh server client"
+                echo "  • 查看运行状态: bash deploy.sh server status"
+                echo "  • 停止常驻服务: bash deploy.sh server stop"
+                echo "=========================================================="
                 ;;
             stop)
                 docker_cmd rm -f "$srv_container" >/dev/null 2>&1 || true
@@ -129,23 +162,43 @@ case "${1:-help}" in
             logs)
                 docker_cmd logs --tail 100 -f "$srv_container"
                 ;;
-            client|test)
-                docker_cmd run --rm "${usb_args[@]}" \
-                    -v "$SF_DIR:/home/caseim/SF_sorting0916" \
-                    -w /home/caseim/SF_sorting0916 \
-                    "$IMAGE" /opt/femto/entrypoint.sh ros2 service call /sf_sorting/get_result std_srvs/srv/Trigger "{}"
+            client)
+                run_sorting_client client "${@:3}"
+                ;;
+            test)
+                run_sorting_client test "${@:3}"
                 ;;
             run)
                 tty_arg=$(get_tty_args)
-                docker_cmd run --rm $tty_arg "${usb_args[@]}" \
-                    -v "$SF_DIR:/home/caseim/SF_sorting0916" \
+                mount_args=()
+                if [[ -d "$YOLO_DIR" ]]; then mount_args+=(-v "$YOLO_DIR:/home/caseim/yolo26_packet"); fi
+                if [[ -d "$SF_DIR" ]]; then mount_args+=(-v "$SF_DIR:/home/caseim/SF_sorting0916"); fi
+                docker_cmd run --rm $tty_arg "${usb_args[@]}" "${mount_args[@]}" \
                     -w /home/caseim/SF_sorting0916 \
                     "$IMAGE" /opt/femto/entrypoint.sh python3 SFsorting.py --mode service "${@:3}"
                 ;;
             *)
-                echo "Usage: bash deploy.sh server {start|stop|status|logs|client|run}"
+                echo "Usage: bash deploy.sh server {start|stop|status|logs|client|test|run}"
                 ;;
         esac
+        ;;
+    client)
+        run_sorting_client client "${@:2}"
+        ;;
+    test)
+        run_sorting_client test "${@:2}"
+        ;;
+    server-start)
+        "$0" server start "${@:2}"
+        ;;
+    server-stop)
+        "$0" server stop "${@:2}"
+        ;;
+    server-status)
+        "$0" server status "${@:2}"
+        ;;
+    server-logs)
+        "$0" server logs "${@:2}"
         ;;
     bash)
         mount_args=()
@@ -181,6 +234,28 @@ case "${1:-help}" in
         docker_cmd rm -f "$CONTAINER"
         ;;
     *)
-        echo "Usage: bash deploy.sh {devices|start SERIAL [DOMAIN]|verify|detect|location [--watch]|sorting|server|bash|rviz|topics|logs|status|stop|resume|remove}"
+        echo "================================================================================"
+        echo "顺丰视觉系统统一部署与调用工具 (deploy.sh)"
+        echo "================================================================================"
+        echo "【一、相机驱动管理】"
+        echo "  bash deploy.sh devices                      - 列出连接的 Femto Bolt 相机与序列号"
+        echo "  bash deploy.sh start <SERIAL> [DOMAIN]     - 启动相机驱动常驻服务"
+        echo "  bash deploy.sh verify                       - 验证相机彩色、深度与点云话题"
+        echo "  bash deploy.sh status / logs / stop         - 相机服务 状态 / 实时日志 / 停止"
+        echo ""
+        echo "【二、分拣算法常驻服务 (Server)】"
+        echo "  bash deploy.sh server start                 - 启动分拣常驻计算服务 (sf_sorting_server)"
+        echo "  bash deploy.sh server stop                  - 停止分拣常驻计算服务"
+        echo "  bash deploy.sh server status                - 查看分拣常驻服务容器状态"
+        echo "  bash deploy.sh server logs                  - 查看分拣常驻服务日志 (实时输出)"
+        echo ""
+        echo "【三、实际工程生产调用 (Production Workflow)】"
+        echo "  bash deploy.sh server client                - 生产模式：输出标准 JSON 结果供 PLC/主控程序解析"
+        echo "  (快捷别名: bash deploy.sh client)"
+        echo ""
+        echo "【四、测试与诊断工作流 (Testing & Benchmark)】"
+        echo "  bash deploy.sh server test                  - 测试模式：打印完整的端到端耗时分解与目标抓取详情"
+        echo "  (快捷别名: bash deploy.sh test)"
+        echo "================================================================================"
         ;;
 esac

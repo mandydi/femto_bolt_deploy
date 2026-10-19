@@ -762,7 +762,11 @@ class SFSortingServerNode:
                 "z": None,
                 "quad_3d": None,
                 "theta_x_deg": None,
-                "theta_y_deg": None
+                "theta_y_deg": None,
+                "timing": {
+                    "wait_frame_ms": round(t_wait * 1000, 1),
+                    "server_total_ms": round(t_wait * 1000, 1)
+                }
             }
             response.success = False
             response.message = json.dumps(res_dict, ensure_ascii=False)
@@ -813,6 +817,15 @@ class SFSortingServerNode:
 
             total_cost = time.time() - t0
             print(f"  [响应耗时明细] 等待帧: {t_wait*1000:.1f}ms | 转换: {t_parse*1000:.1f}ms | YOLO: {t_yolo*1000:.1f}ms | 3D拟合: {t_fit*1000:.1f}ms | 总响应: {total_cost:.3f}s", flush=True)
+
+            timing_info = {
+                "wait_frame_ms": round(t_wait * 1000, 1),
+                "parse_ms": round(t_parse * 1000, 1),
+                "yolo_ms": round(t_yolo * 1000, 1),
+                "fit_3d_ms": round(t_fit * 1000, 1),
+                "server_total_ms": round(total_cost * 1000, 1)
+            }
+
             if min_xyz is not None:
                 print(f"  --> 计算成功! 目标类别: {best_label}", flush=True)
                 print(f"      z最小坐标: x={min_xyz[0]:.2f}, y={min_xyz[1]:.2f}, z={min_xyz[2]:.2f} mm", flush=True)
@@ -832,7 +845,8 @@ class SFSortingServerNode:
                     "z": round(float(min_xyz[2]), 2),
                     "quad_3d": [[round(float(c), 2) for c in pt] for pt in quad_3d] if quad_3d is not None else None,
                     "theta_x_deg": round(float(plane_info["theta_x_deg"]), 4) if plane_info else None,
-                    "theta_y_deg": round(float(plane_info["theta_y_deg"]), 4) if plane_info else None
+                    "theta_y_deg": round(float(plane_info["theta_y_deg"]), 4) if plane_info else None,
+                    "timing": timing_info
                 }
                 response.success = True
             else:
@@ -846,7 +860,8 @@ class SFSortingServerNode:
                     "z": None,
                     "quad_3d": None,
                     "theta_x_deg": None,
-                    "theta_y_deg": None
+                    "theta_y_deg": None,
+                    "timing": timing_info
                 }
                 response.success = False
 
@@ -865,7 +880,13 @@ class SFSortingServerNode:
             err_msg = f"处理异常: {str(e)}"
             print(f"[ERROR] {err_msg}", flush=True)
             response.success = False
-            response.message = json.dumps({"success": False, "error": err_msg}, ensure_ascii=False)
+            response.message = json.dumps({
+                "success": False,
+                "error": err_msg,
+                "timing": {
+                    "server_total_ms": round((time.time() - t0) * 1000, 1)
+                }
+            }, ensure_ascii=False)
             return response
 
 
