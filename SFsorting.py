@@ -444,6 +444,17 @@ def process_one_sample(
         u = int(round(cx_px))
         v = int(round(cy_px))
         d_val = depth_np[v, u]
+        # 如果中心单像素没有有效深度，取其周围 15x15 局部窗口内有效深度的中值
+        if d_val <= 0:
+            patch = depth_np[max(0, v - 7):min(H, v + 8), max(0, u - 7):min(W, u + 8)]
+            valid_patch = patch[patch > 100]
+            if len(valid_patch) > 0:
+                d_val = float(np.median(valid_patch))
+            else:
+                pts_in_poly = depth_np[(poly_mask > 0) & (depth_np > 100)]
+                if len(pts_in_poly) > 0:
+                    d_val = float(np.median(pts_in_poly))
+
         xyz = pixel2world_with_distortion(u, v, d_val, camera_matrix, dist_coeffs)
 
         if xyz is not None:
