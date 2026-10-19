@@ -41,18 +41,20 @@ def format_timing_report(cost_sec, data):
     report.append(f"[*] 执行状态: {status_str}")
     report.append("")
     report.append("⏱️  【调用耗时统计 (Timing Breakdown)】")
-    report.append(f"  • 客户端端到端耗时 (RTT):   {cost_sec:.3f} s  ({cost_sec*1000:.1f} ms)")
+    report.append(f"  • 客户端实际总耗时 (RTT):   {cost_sec:.3f} s  ({cost_sec*1000:.1f} ms)  <-- 客户端拿到数据的完整实际时间")
     
     if server_total_ms is not None:
-        report.append(f"  • 服务端计算总耗时:         {server_total_ms/1000:.3f} s  ({server_total_ms:.1f} ms)")
-    if wait_frame_ms is not None:
-        report.append(f"    - 相机帧同步等待:         {wait_frame_ms/1000:.3f} s  ({wait_frame_ms:.1f} ms)")
-    if parse_ms is not None:
-        report.append(f"    - 图像与点云格式转换:     {parse_ms/1000:.3f} s  ({parse_ms:.1f} ms)")
-    if yolo_ms is not None:
-        report.append(f"    - YOLO 目标与多边形检测:  {yolo_ms/1000:.3f} s  ({yolo_ms:.1f} ms)")
-    if fit_3d_ms is not None:
-        report.append(f"    - 3D点云抽取与平面拟合:   {fit_3d_ms/1000:.3f} s  ({fit_3d_ms:.1f} ms)")
+        comm_ms = max(0.0, cost_sec * 1000 - server_total_ms)
+        report.append(f"    ├─ 服务端算法计算总耗时:   {server_total_ms/1000:.3f} s  ({server_total_ms:.1f} ms)  (已包含在 RTT 内，无需叠加)")
+        if wait_frame_ms is not None:
+            report.append(f"    │  ├─ 相机帧同步等待:     {wait_frame_ms/1000:.3f} s  ({wait_frame_ms:.1f} ms)")
+        if parse_ms is not None:
+            report.append(f"    │  ├─ 图像与点云格式转换: {parse_ms/1000:.3f} s  ({parse_ms:.1f} ms)")
+        if yolo_ms is not None:
+            report.append(f"    │  ├─ YOLO 目标与多边形:  {yolo_ms/1000:.3f} s  ({yolo_ms:.1f} ms)")
+        if fit_3d_ms is not None:
+            report.append(f"    │  └─ 3D点云抽取与拟合:   {fit_3d_ms/1000:.3f} s  ({fit_3d_ms:.1f} ms)")
+        report.append(f"    └─ ROS 2 网络通信与开销:   {comm_ms/1000:.3f} s  ({comm_ms:.1f} ms)")
 
     # 评估指标
     if cost_sec < 1.0:
@@ -115,8 +117,13 @@ def call_sorting_service(timeout_sec=5.0, json_only=False, exit_on_fail=False):
         cost_sec = time.time() - t0
 
         if json_only:
-            # 纯 JSON 模式直接输出服务端传回的 JSON 消息
-            print(res.message, flush=True)
+            # 纯工程生产模式: 剥离 timing 调试字段，纯净输出业务所需的数据结构
+            try:
+                data = json.loads(res.message)
+                data.pop("timing", None)
+                print(json.dumps(data, ensure_ascii=False), flush=True)
+            except Exception:
+                print(res.message, flush=True)
         else:
             try:
                 data = json.loads(res.message)
