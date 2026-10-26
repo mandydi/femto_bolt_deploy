@@ -26,3 +26,13 @@ __pycache__/
 !mask1.png
 *.bak*
 captured_frame*
+
+# Private deployment assets and device-specific configuration
+assets/
+config/calibration.json
+deployment_exports/
+*.pt
+*.onnx
+*.engine
+*.pem
+.env

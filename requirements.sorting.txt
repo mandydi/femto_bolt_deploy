@@ -1,0 +1,10 @@
+# Observed inside the running 8001 sorting container on 2026-10-26.
+# An offline export of that exact image is the validated migration route.
+# Availability of these versions on a fresh package index is NOT verified.
+numpy==1.26.4
+opencv-python==4.10.0.84
+open3d==0.20.0
+shapely==2.1.2
+numba==0.68.0
+llvmlite==0.50.0
+ultralytics==8.4.153

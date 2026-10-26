@@ -1,0 +1,12 @@
+ARG CAMERA_IMAGE=orbbec-femto-bolt:camera-local
+FROM ${CAMERA_IMAGE}
+USER root
+RUN apt-get update && apt-get install -y --no-install-recommends python3-pip \
+    ros-humble-message-filters ros-humble-std-srvs ros-humble-sensor-msgs \
+    ros-humble-std-msgs && rm -rf /var/lib/apt/lists/*
+COPY requirements.sorting.txt /tmp/requirements.sorting.txt
+RUN python3 -m pip install --no-cache-dir torch==2.14.0+cpu torchvision==0.29.0+cpu \
+    --index-url https://download.pytorch.org/whl/cpu && \
+    python3 -m pip install --no-cache-dir -r /tmp/requirements.sorting.txt
+# Runtime source/config/assets are mounted by deploy.sh; weights never enter Git.
+WORKDIR /app

@@ -1,0 +1,63 @@
+{
+  "schema_version": 1,
+  "validated_for_deployment": false,
+  "image_size": [
+    3840,
+    2160
+  ],
+  "camera_matrix": [
+    [
+      2249.6287,
+      0,
+      1877.3463
+    ],
+    [
+      0,
+      2248.4431,
+      1073.7207
+    ],
+    [
+      0,
+      0,
+      1
+    ]
+  ],
+  "dist_coeffs": [
+    0.080384,
+    -0.107753,
+    -0.000413,
+    0.000256,
+    0.044622,
+    0,
+    0,
+    0
+  ],
+  "camera_to_world_mm": [
+    [
+      0.0245,
+      -0.9996,
+      -0.0108,
+      51.2622
+    ],
+    [
+      -0.998,
+      -0.0238,
+      -0.0593,
+      763.6075
+    ],
+    [
+      0.059,
+      0.0122,
+      -0.9982,
+      1295.5519
+    ],
+    [
+      0.0,
+      0.0,
+      0.0,
+      1.0
+    ]
+  ],
+  "world_frame": "REPLACE_WITH_VERIFIED_FRAME",
+  "note": "Historical 8001 reference only. Recalibrate for each camera/mount; do not command a robot with this example."
+}

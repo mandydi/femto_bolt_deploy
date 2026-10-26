@@ -1,0 +1,10 @@
+/deploy.sh text eol=lf
+/tools/*.sh text eol=lf
+/tools/*.py text eol=lf
+/runtime/*.py text eol=lf
+/tests/*.py text eol=lf
+/test_sorting_client.py text eol=lf
+/Dockerfile.sorting text eol=lf
+/config/*.json text eol=lf
+/docs/*.md text eol=lf
+/README.md text eol=lf

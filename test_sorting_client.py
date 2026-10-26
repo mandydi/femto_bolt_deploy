@@ -45,7 +45,7 @@ def format_timing_report(cost_sec, data):
     
     if server_total_ms is not None:
         comm_ms = max(0.0, cost_sec * 1000 - server_total_ms)
-        report.append(f"    ├─ 服务端算法计算总耗时:   {server_total_ms/1000:.3f} s  ({server_total_ms:.1f} ms)  (已包含在 RTT 内，无需叠加)")
+        report.append(f"    ├─ 服务端本次请求总耗时:   {server_total_ms/1000:.3f} s  ({server_total_ms:.1f} ms)  (已包含在 RTT 内，无需叠加)")
         if wait_frame_ms is not None:
             report.append(f"    │  ├─ 相机帧同步等待:     {wait_frame_ms/1000:.3f} s  ({wait_frame_ms:.1f} ms)")
         if parse_ms is not None:
@@ -55,6 +55,10 @@ def format_timing_report(cost_sec, data):
         if fit_3d_ms is not None:
             report.append(f"    │  └─ 3D点云抽取与拟合:   {fit_3d_ms/1000:.3f} s  ({fit_3d_ms:.1f} ms)")
         report.append(f"    └─ ROS 2 网络通信与开销:   {comm_ms/1000:.3f} s  ({comm_ms:.1f} ms)")
+
+    if timing.get('preprocess_ms') is not None:
+        report.append(f"  • 后台同步帧预处理:         {timing['preprocess_ms']:.1f} ms (请求前执行，不计入 RTT)")
+        report.append(f"  • 算法开始时输入帧龄:       {timing['frame_age_ms']:.1f} ms")
 
     # 评估指标
     if cost_sec < 1.0:
@@ -66,21 +70,21 @@ def format_timing_report(cost_sec, data):
     report.append("🎯 【目标识别与抓取结果 (Target Info)】")
     if is_success:
         report.append(f"  • 包裹类别:   {data.get('best_label')}")
-        report.append(f"  • 抓取坐标:   X = {data.get('x')} mm,  Y = {data.get('y')} mm,  Z = {data.get('z')} mm")
-        report.append(f"  • 平面法向角: theta_x = {data.get('theta_x_deg')}°,  theta_y = {data.get('theta_y_deg')}°")
-        quad_3d = data.get("quad_3d")
-        if quad_3d and len(quad_3d) >= 4:
-            report.append("  • 四边形空间顶点 (mm):")
+        report.append(f"  • 中心坐标:   X = {data.get('center_world', [None]*3)[0]} mm,  Y = {data.get('center_world', [None]*3)[1]} mm,  Z = {data.get('center_world', [None]*3)[2]} mm")
+        quad_3d = data.get("box_8pts_world")
+        if quad_3d and len(quad_3d) == 8:
+            report.append("  • 内接包络长方体八点 (mm):")
             for idx, pt in enumerate(quad_3d):
                 report.append(f"      P{idx+1}: [{pt[0]:>8.2f}, {pt[1]:>8.2f}, {pt[2]:>8.2f}]")
     else:
         report.append("  • 未在有效抓取区域 (ROI) 内检测到包裹，或点云深度质量不足")
     
     report.append("=" * 60)
+    if data.get("error"): report.append(f"错误: {data['error']}")
     return "\n".join(report)
 
 
-def call_sorting_service(timeout_sec=5.0, json_only=False, exit_on_fail=False):
+def call_sorting_service(timeout_sec=5.0, json_only=False, exit_on_fail=False, call_timeout_sec=30.0):
     rclpy.init()
     node = rclpy.create_node('sf_sorting_client')
     client = node.create_client(Trigger, '/sf_sorting/get_result')
@@ -110,7 +114,15 @@ def call_sorting_service(timeout_sec=5.0, json_only=False, exit_on_fail=False):
     t0 = time.time()
     req = Trigger.Request()
     future = client.call_async(req)
-    rclpy.spin_until_future_complete(node, future)
+    rclpy.spin_until_future_complete(node, future, timeout_sec=call_timeout_sec)
+
+    if not future.done():
+        future.cancel()
+        failure = {"success": False, "error": "Service response timeout; execution result unknown"}
+        print(json.dumps(failure, ensure_ascii=False), flush=True)
+        node.destroy_node()
+        rclpy.shutdown()
+        sys.exit(1)
 
     if future.result() is not None:
         res = future.result()
@@ -157,6 +169,7 @@ if __name__ == '__main__':
     parser.add_argument("--json", action="store_true", help="生产模式: 仅输出标准 JSON 结果供外部工程/PLC捕获")
     parser.add_argument("--timeout", type=float, default=5.0, help="服务连接超时时间(秒，默认 5.0)")
     parser.add_argument("--exit-on-fail", action="store_true", help="当未检测到包裹时返回非0退出码 (默认不开启，返回0并输出 success: false)")
+    parser.add_argument("--call-timeout", type=float, default=30.0, help="服务响应超时秒数（不自动重试）")
     args = parser.parse_args()
 
-    call_sorting_service(timeout_sec=args.timeout, json_only=args.json, exit_on_fail=args.exit_on_fail)
+    call_sorting_service(timeout_sec=args.timeout, json_only=args.json, exit_on_fail=args.exit_on_fail, call_timeout_sec=args.call_timeout)

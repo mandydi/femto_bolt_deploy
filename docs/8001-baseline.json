@@ -1,0 +1,35 @@
+{
+  "observed_at": "2026-10-26",
+  "architecture": "x86_64",
+  "ros": "humble",
+  "topics": [
+    "/vision/top_camera/rgb",
+    "/vision/top_camera/depth",
+    "/vision/top_camera/points"
+  ],
+  "rgb_size": [
+    3840,
+    2160
+  ],
+  "depth_native_size": [
+    640,
+    576
+  ],
+  "domain": 0,
+  "camera_image_id": "sha256:d08f9b0ddf88a303024cad27f0663697f7f1f7a0a42ded7c878355905a89b245",
+  "sorting_image_id": "sha256:daaefff0190df8ecc679642bcd9af1f08ff752f521f04f4558216959b5820c64",
+  "model_sha256": "6a4cda66711d759c5fdbab07ded13608d86cddd31de913414da798d0704b4e16",
+  "model_size": 25349334,
+  "result_fields": [
+    "success",
+    "best_label",
+    "center_world",
+    "box_8pts_world",
+    "timing"
+  ],
+  "units": "mm",
+  "source_sha256": {
+    "SFsorting.py": "61e119c4de68f00a7e927d980b22adc8d5c478d6156516fbe1f9a0d7194f7bd9",
+    "predict_yolo.py": "2f9c14cd20b2200fa8a287944ef6d6c0a3efa30b6bf4ce019500573068774785"
+  }
+}
