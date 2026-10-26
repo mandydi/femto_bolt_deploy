@@ -3,7 +3,7 @@
 set -euo pipefail
 ROOT="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 cd "$ROOT"
-D=(sudo docker)
+if docker info >/dev/null 2>&1; then D=(docker); else D=(sudo docker); fi
 CAMERA_IMAGE="${CAMERA_IMAGE:-orbbec-femto-bolt:camera-local}"
 SORTING_IMAGE="${SORTING_IMAGE:-orbbec-femto-bolt:sorting-local}"
 CAMERA_CONTAINER="${CAMERA_CONTAINER:-femto-camera}"
@@ -28,34 +28,52 @@ check_runtime() {
       -v "$ROOT/runtime:/app:ro" -v "$CONFIG:/config:ro" -v "$ASSETS:/assets:ro" -w /app \
       "$SORTING_IMAGE" python3 -c 'import numpy,cv2,open3d,shapely,numba,torch,ultralytics,rclpy,message_filters; from std_srvs.srv import Trigger; from deployment_config import load_calibration; load_calibration(); import SFsorting; from predict_yolo import get_model; get_model(); print("PASS runtime imports, model load, calibration configuration")'
 }
+install_host() {
+    if ! command -v docker >/dev/null; then
+        sudo apt-get update
+        sudo apt-get install -y docker.io
+    fi
+    sudo systemctl enable --now docker
+    sudo apt-get install -y python3
+    rule="$ROOT/src/orbbec_camera/udev/99-obsensor-libusb.rules"
+    [[ -f "$rule" ]] || rule="$ROOT/src/orbbec_camera/scripts/99-obsensor-libusb.rules"
+    [[ -f "$rule" ]] || fail 'Cannot find SDK udev rule; inspect src/orbbec_camera before continuing'
+    sudo install -m 644 "$rule" /etc/udev/rules.d/99-obsensor-libusb.rules
+    sudo udevadm control --reload-rules
+    echo 'Docker and udev installed. Replug camera; next import a verified bundle or build images.'
+}
+import_bundle() {
+    local bundle="${1:?Usage: bash deploy.sh import /absolute/path/to/private-bundle}"
+    [[ "$bundle" = /* ]] || fail 'Bundle path must be absolute'
+    [[ ! -e "$ROOT/assets" ]] || fail 'assets already exists; leave existing assets intact and import to a clean checkout'
+    (cd "$bundle" && sha256sum -c SHA256SUMS)
+    [[ -f "$bundle/images.tar.gz" ]] || fail 'Bundle has no images; export with --images or use build (fresh build unverified)'
+    gzip -dc "$bundle/images.tar.gz" | "${D[@]}" load
+    local camera_id sorting_id
+    camera_id=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["camera"])' "$bundle/image-ids.json")
+    sorting_id=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["sorting"])' "$bundle/image-ids.json")
+    "${D[@]}" tag "$camera_id" "$CAMERA_IMAGE"
+    "${D[@]}" tag "$sorting_id" "$SORTING_IMAGE"
+    cp -a "$bundle/assets" "$ROOT/assets"
+    echo 'Images and assets imported. Create this device calibration before server start.'
+}
+offline_check() {
+    python3 tools/check_assets.py "$ASSETS"
+    "${D[@]}" run --rm --network none --entrypoint /opt/femto/entrypoint.sh \
+      -v "$ROOT/runtime:/app:ro" -v "$ASSETS:/assets:ro" \
+      -e NUMBA_CACHE_DIR=/tmp/numba -w /app "$SORTING_IMAGE" \
+      python3 -c 'import cv2,numpy,open3d,shapely,numba,torch,ultralytics,rclpy,message_filters; from std_srvs.srv import Trigger; import SFsorting; from predict_yolo import get_model; m=get_model(); print("PASS offline imports and model",torch.__version__,m.names)'
+    echo 'Offline environment ready. Camera and this workcell calibration still require onsite acceptance.'
+}
 case "${1:-help}" in
-    install)
-        if ! command -v docker >/dev/null; then
-            sudo apt-get update
-            sudo apt-get install -y docker.io
-        fi
-        sudo systemctl enable --now docker
-        sudo apt-get install -y python3
-        rule="$ROOT/src/orbbec_camera/udev/99-obsensor-libusb.rules"
-        [[ -f "$rule" ]] || rule="$ROOT/src/orbbec_camera/scripts/99-obsensor-libusb.rules"
-        [[ -f "$rule" ]] || fail 'Cannot find SDK udev rule; inspect src/orbbec_camera before continuing'
-        sudo install -m 644 "$rule" /etc/udev/rules.d/99-obsensor-libusb.rules
-        sudo udevadm control --reload-rules
-        echo 'Docker and udev installed. Replug camera; next import a verified bundle or build images.'
-        ;;
-    import)
-        bundle="${2:?Usage: bash deploy.sh import /absolute/path/to/private-bundle}"
-        [[ "$bundle" = /* ]] || fail 'Bundle path must be absolute'
-        (cd "$bundle" && sha256sum -c SHA256SUMS)
-        [[ -f "$bundle/images.tar.gz" ]] || fail 'Bundle has no images; export with --images or use build (fresh build unverified)'
-        gzip -dc "$bundle/images.tar.gz" | "${D[@]}" load
-        camera_id=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["camera"])' "$bundle/image-ids.json")
-        sorting_id=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["sorting"])' "$bundle/image-ids.json")
-        "${D[@]}" tag "$camera_id" "$CAMERA_IMAGE"
-        "${D[@]}" tag "$sorting_id" "$SORTING_IMAGE"
-        [[ ! -e "$ROOT/assets" ]] || fail 'assets already exists; leave existing assets intact and import to a clean checkout'
-        cp -a "$bundle/assets" "$ROOT/assets"
-        echo 'Images and assets imported. Create this device calibration before server start.'
+    install) install_host ;;
+    import) import_bundle "${2:?Usage: bash deploy.sh import /absolute/path/to/private-bundle}" ;;
+    offline-check) offline_check ;;
+    prepare)
+        install_host
+        import_bundle "${2:?Usage: bash deploy.sh prepare /absolute/path/to/private-bundle}"
+        [[ -e "$CONFIG/calibration.json" ]] || cp "$CONFIG/calibration.example.json" "$CONFIG/calibration.json"
+        offline_check
         ;;
     build)
         [[ "$(uname -m)" == x86_64 ]] || fail 'Sorting baseline validated only on x86_64'
@@ -112,5 +130,5 @@ case "${1:-help}" in
     stop) "${D[@]}" stop "$CAMERA_CONTAINER" ;;
     resume) "${D[@]}" start "$CAMERA_CONTAINER" ;;
     remove) "${D[@]}" rm "$CAMERA_CONTAINER" ;;
-    *) printf '%s\n' 'deploy.sh install | import ABS_BUNDLE | build | devices | start SERIAL | verify | check' 'deploy.sh server start|client|test|status|logs|stop|resume|remove' 'deploy.sh status|logs|stop|resume|remove' ;;
+    *) printf '%s\n' 'deploy.sh prepare ABS_BUNDLE | install | import ABS_BUNDLE | offline-check | build' 'deploy.sh devices | start SERIAL | verify | check | status|logs|stop|resume|remove' 'deploy.sh server start|client|test|status|logs|stop|resume|remove' ;;
 esac

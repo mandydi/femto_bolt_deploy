@@ -2,6 +2,8 @@
 
 本仓库的部署入口为 `deploy.sh`。2026-10-26 根据 **8001 正在运行的环境**重新整理，见 [基线与验证记录](docs/DEPLOYMENT_BASELINE.md)。
 
+新设备按 [固定部署与接相机验收流程](docs/NEW_WORKSTATION_SOP.md) 执行。私有包放入仓库内被 Git 忽略的 `private/femto-YYYYMMDD/` 后，可运行 `bash deploy.sh prepare "$PWD/private/femto-YYYYMMDD"` 一次完成安装、导入和离线检查。
+
 它部署相机和视觉服务，不连接机器人、不发送动作。输入为彩色/深度/点云，输出为包裹类别、中心及八个三维顶点。**代码可从 GitHub 获取；模型、镜像和现场资产通过私有迁移包传递，不存入公开仓库。克隆仓库不是完整部署。**
 
 ## 推荐：离线迁移到新工控机
