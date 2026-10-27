@@ -4,7 +4,7 @@
 
 新设备按 [固定部署与接相机验收流程](docs/NEW_WORKSTATION_SOP.md) 执行。私有包放入仓库内被 Git 忽略的 `private/femto-YYYYMMDD/` 后，可运行 `bash deploy.sh prepare "$PWD/private/femto-YYYYMMDD"` 一次完成安装、导入和离线检查。
 
-新机未标定时先用 `bash deploy.sh server start --diagnostic`、`bash deploy.sh server client` 验证相机到分拣服务的回包；返回的坐标仅在相机系，不能交给机器人。现场三路静态采样可运行 `bash save_head_camera.sh`。
+新机未标定时先用 `bash deploy.sh server start --diagnostic`、`bash deploy.sh server client` 验证相机到分拣服务的回包；返回的坐标仅在相机系，不能交给机器人。现场三路静态采样可运行 `bash save_head_camera.sh`。另接的 Fic760x USB 相机可运行 `bash save_usb_camera.sh`，保存 4000×3000 JPEG 到 `captured_usb_camera/`；脚本会先关闭占用设备的 Cheese。
 
 它部署相机和视觉服务，不连接机器人、不发送动作。输入为彩色/深度/点云，输出为包裹类别、中心及八个三维顶点。**代码可从 GitHub 获取；模型、镜像和现场资产通过私有迁移包传递，不存入公开仓库。克隆仓库不是完整部署。**
 

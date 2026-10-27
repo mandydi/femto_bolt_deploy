@@ -26,6 +26,7 @@ __pycache__/
 !mask1.png
 *.bak*
 captured_frame*
+captured_usb_camera/
 
 # Private deployment assets and device-specific configuration
 assets/
