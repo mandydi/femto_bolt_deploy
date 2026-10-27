@@ -31,7 +31,7 @@ check_runtime() {
     python3 tools/check_assets.py "$ASSETS"
     "${D[@]}" run --rm --network none --entrypoint /opt/femto/entrypoint.sh \
       -v "$ROOT/runtime:/app:ro" -v "$CONFIG:/config:ro" -v "$ASSETS:/assets:ro" -w /app \
-      "$SORTING_IMAGE" python3 -c 'import numpy,cv2,open3d,shapely,numba,torch,ultralytics,rclpy,message_filters; from std_srvs.srv import Trigger; from deployment_config import load_calibration; load_calibration(); import SFsorting; from predict_yolo import get_model; get_model(); print("PASS runtime imports, model load, calibration configuration")'
+      "$SORTING_IMAGE" python3 -c 'import numpy,cv2,open3d,shapely,numba,torch,ultralytics,rclpy,message_filters; assert hasattr(cv2,"wechat_qrcode"), "OpenCV WeChatQRCode missing"; cv2.wechat_qrcode.WeChatQRCode(); from std_srvs.srv import Trigger; from deployment_config import load_calibration; load_calibration(); import SFsorting; from predict_yolo import get_model; get_model(); print("PASS runtime imports, QR decoder, model load, calibration configuration")'
 }
 install_host() {
     if ! command -v docker >/dev/null; then
