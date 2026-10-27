@@ -4,6 +4,8 @@
 
 新设备按 [固定部署与接相机验收流程](docs/NEW_WORKSTATION_SOP.md) 执行。私有包放入仓库内被 Git 忽略的 `private/femto-YYYYMMDD/` 后，可运行 `bash deploy.sh prepare "$PWD/private/femto-YYYYMMDD"` 一次完成安装、导入和离线检查。
 
+新机未标定时先用 `bash deploy.sh server start --diagnostic`、`bash deploy.sh server client` 验证相机到分拣服务的回包；返回的坐标仅在相机系，不能交给机器人。现场三路静态采样可运行 `bash save_head_camera.sh`。
+
 它部署相机和视觉服务，不连接机器人、不发送动作。输入为彩色/深度/点云，输出为包裹类别、中心及八个三维顶点。**代码可从 GitHub 获取；模型、镜像和现场资产通过私有迁移包传递，不存入公开仓库。克隆仓库不是完整部署。**
 
 ## 推荐：离线迁移到新工控机
@@ -79,10 +81,10 @@ bash deploy.sh server client
 客户端输出 JSON，必须检查 `success`。成功字段为：
 
 ```json
-{"success":true,"best_label":"carton","center_world":[0,0,0],"box_8pts_world":[[0,0,0],[0,0,0],[0,0,0],[0,0,0],[0,0,0],[0,0,0],[0,0,0],[0,0,0]],"timing":{}}
+{"success":true,"best_label":"carton","center_world":[0,0,0],"box_8pts_world":[[0,0,0],[0,0,0],[0,0,0],[0,0,0],[0,0,0],[0,0,0],[0,0,0],[0,0,0]],"waybill_dict":{},"timing":{}}
 ```
 
-上例仅展示结构，零坐标不代表有效结果。实际中心为3个有限数，轮廓为8×3有限数，单位mm。`world_frame` 来自设备配置（旧服务 JSON 不包含该字段），消费者必须与配置同时管理。八点语义、顺序见 runtime/SFsorting.py 的 box_8pts 构造；对接机器人前用已知物体核验，不把它当旧四点 quad_3d。无码/二维码功能不在本次分拣服务范围内。
+上例仅展示结构，零坐标不代表有效结果。实际中心为3个有限数，轮廓为8×3有限数，单位mm。`world_frame` 来自设备配置，消费者必须与配置同时管理。八点语义、顺序见 runtime/SFsorting.py 的 box_8pts 构造；对接机器人前用已知物体核验，不把它当旧四点 quad_3d。2026-10-27 已同步 8001 的面单二维码识别分支：仅在检测到的二维码与所选包裹重叠并成功解码时填写 `waybill_dict`，否则为 `{}`；这不等于已经向顺丰平台查询。
 
 ### 5. 重启验收
 

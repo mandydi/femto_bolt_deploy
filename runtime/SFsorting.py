@@ -17,6 +17,26 @@ except ImportError:
     _HAS_NUMBA = False
 
 
+def barcode_wechat_detect(img):
+    try:
+        detector = cv2.wechat_qrcode.WeChatQRCode()
+    except Exception as e:
+        print(f"初始化 WeChatQRCode 失败: {e}")
+        return []
+    if img is None:
+        print("图片读取失败")
+        return []
+    scale = 1.2
+    img_resize = cv2.resize(img, None, fx=scale, fy=scale)
+    res, points = detector.detectAndDecode(img_resize)
+    output = []
+    for text, pts in zip(res, points):
+        if len(text) > 0:
+            output.append({"data": text})
+            print(f"识别结果：{text}")
+    return output
+
+
 @njit(cache=True, nogil=True)
 def _project_xyz_kernel(points, camera, distortion):
     result = np.empty((len(points), 1, 2), dtype=np.float64)
@@ -421,6 +441,7 @@ def process_one_sample(
     """
     只返回 best_label、长方体8个世界坐标、中心世界坐标。
     """
+    waybill_dict = {}
     Tcw = np.asarray(load_calibration()['camera_to_world_mm'], dtype=np.float64)
 
     img = png_path if isinstance(png_path, np.ndarray) else cv2.imread(png_path)
@@ -454,7 +475,7 @@ def process_one_sample(
 
     intersect_mask = cv2.bitwise_and(mask_1_2, mask)
     if not np.any(intersect_mask > 0):
-        return None, None, None
+        return None, None, None, waybill_dict
 
     depth_raw = depth_path if isinstance(depth_path, np.ndarray) else cv2.imread(depth_path, cv2.IMREAD_UNCHANGED)
     if depth_raw is None:
@@ -488,13 +509,43 @@ def process_one_sample(
             })
 
     if len(valid_records) == 0:
-        return None, None, None
+        return None, None, None, waybill_dict
 
     valid_records.sort(key=lambda r: r["xyz"][2])
     best_rec = valid_records[0]
     best_label = best_rec["label"]
     best_poly_mask = best_rec["poly_mask"]
     best_u, best_v = best_rec["u"], best_rec["v"]
+
+    for shape in shapes_list:
+        if shape.get('label', '') != 'waybill':
+            continue
+        wb_pts = shape.get('points', [])
+        if len(wb_pts) < 3:
+            continue
+        wb_mask = polygon_to_mask(wb_pts, (H, W))
+        inter_wb = cv2.bitwise_and(wb_mask, best_poly_mask)
+        if not np.any(inter_wb > 0):
+            continue
+        pts_arr = np.array(wb_pts, dtype=np.int32).reshape(-1, 1, 2)
+        x, y, w, h = cv2.boundingRect(pts_arr)
+        if w <= 0 or h <= 0:
+            continue
+        x, y = max(0, x), max(0, y)
+        x2, y2 = min(W, x + w), min(H, y + h)
+        if x2 <= x or y2 <= y:
+            continue
+        crop = img[y:y2, x:x2]
+        try:
+            output = barcode_wechat_detect(crop)
+        except Exception as e:
+            print(f"条码识别异常: {e}")
+            output = []
+        if output:
+            waybill_id = output[0].get("data", "")
+            if waybill_id:
+                waybill_dict = {waybill_id: output}
+        break
 
     pts_raw, mask_1_2_mini, plane_coeff, prism_points, outline_px, z_low, z_high = \
         get_shrunk_mask_prism_fit_plane(
@@ -509,7 +560,7 @@ def process_one_sample(
         )
 
     if plane_coeff is None or pts_raw is None:
-        return best_label, None, None
+        return best_label, None, None, waybill_dict
 
     # ===== 灰度图：用 pts_raw（原始点云），与原版一致 =====
     gray_grid = None
@@ -588,7 +639,7 @@ def process_one_sample(
             gray_grid = gray_grid.reshape(grid_H, grid_W)
 
     if gray_grid is None:
-        return best_label, None, None
+        return best_label, None, None, waybill_dict
 
     # ===== 最大旋转内接矩形（结果同原版，_max_axis_rect 已 numba 加速）=====
     if best_label in ("carton", "foam"):
@@ -602,7 +653,7 @@ def process_one_sample(
 
     contours, _ = cv2.findContours(bin_ero, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
     if len(contours) == 0:
-        return best_label, None, None
+        return best_label, None, None, waybill_dict
 
     max_cnt = max(contours, key=cv2.contourArea)
     max_region_mask = np.zeros_like(bin_ero)
@@ -657,7 +708,7 @@ def process_one_sample(
             best_pts_small = pts
 
     if best_pts_small is None:
-        return best_label, None, None
+        return best_label, None, None, waybill_dict
 
     quad_rect_pts = np.round(best_pts_small / scale).astype(np.int32)
 
@@ -689,20 +740,20 @@ def process_one_sample(
             quad_3d_from_depth[i] = xyz
 
     if np.any(np.isnan(quad_3d_from_depth)):
-        return best_label, None, None
+        return best_label, None, None, waybill_dict
 
     # ===== poly_points 步长5采样到平面距离，取最大值 = 长方体高度 =====
     poly_pts_arr = np.asarray(best_rec["poly_points"], dtype=np.float64)[::5]
     n_pts = poly_pts_arr.shape[0]
     if n_pts == 0:
-        return best_label, None, None
+        return best_label, None, None, waybill_dict
 
     us = np.clip(np.round(poly_pts_arr[:, 0]).astype(np.int32), 0, W - 1)
     vs = np.clip(np.round(poly_pts_arr[:, 1]).astype(np.int32), 0, H - 1)
     ds = depth_np[vs, us].astype(np.float64)
     valid = ds > 0
     if not np.any(valid):
-        return best_label, None, None
+        return best_label, None, None, waybill_dict
 
     pts_in = poly_pts_arr[valid].reshape(-1, 1, 2)
     und = cv2.undistortPoints(pts_in, camera_matrix, dist_coeffs).reshape(-1, 2)
@@ -733,7 +784,7 @@ def process_one_sample(
     box_8pts_world = cam_points_to_world(box_8pts, Tcw)
     center_world = cam_points_to_world(center.reshape(1, 3), Tcw)[0]
 
-    return best_label, box_8pts_world, center_world
+    return best_label, box_8pts_world, center_world, waybill_dict
 
 
 def run_detection(
@@ -759,7 +810,7 @@ def run_detection(
     t_fit = time.perf_counter()
 
     clear_ply_cache()
-    best_label, box_8pts_world, center_world = process_one_sample(
+    best_label, box_8pts_world, center_world, waybill_dict = process_one_sample(
         png_path=rgb_path,
         depth_path=depth_path,
         ply_path=ply_path,
@@ -772,7 +823,7 @@ def run_detection(
         max_roi_pts=MAX_ROI_PTS
     )
     _LAST_TIMING["fit_3d_ms"] = round((time.perf_counter() - t_fit) * 1000, 1)
-    return best_label, box_8pts_world, center_world
+    return best_label, box_8pts_world, center_world, waybill_dict
 
 
 
@@ -787,6 +838,15 @@ def serve_live(camera_matrix, dist_coeffs):
     from rclpy.callback_groups import ReentrantCallbackGroup
     from rclpy.executors import MultiThreadedExecutor
     from rclpy.qos import qos_profile_sensor_data
+    max_frame_age_s = float(os.environ.get('MAX_FRAME_AGE_SEC', '3'))
+    if not np.isfinite(max_frame_age_s) or max_frame_age_s <= 0:
+        raise ValueError('MAX_FRAME_AGE_SEC must be positive and finite')
+    cloud_stride = int(os.environ.get('CLOUD_STRIDE', '1'))
+    if not 1 <= cloud_stride <= 32:
+        raise ValueError('CLOUD_STRIDE must be 1..32')
+    sync_slop_s = float(os.environ.get('SYNC_SLOP_SEC', '0.08'))
+    if not np.isfinite(sync_slop_s) or not 0 < sync_slop_s <= 1:
+        raise ValueError('SYNC_SLOP_SEC must be in (0, 1]')
     parser = argparse.ArgumentParser()
     parser.add_argument('--mode', choices=['service'], default='service')
     parser.parse_args()
@@ -812,13 +872,18 @@ def serve_live(camera_matrix, dist_coeffs):
             frame = pending[0]
             try:
                 rgb, depth, points, received = frame
-                cloud = PreparedCloud(cloud_array(points), camera_matrix, dist_coeffs)
+                cloud = PreparedCloud(cloud_array(points)[::cloud_stride], camera_matrix, dist_coeffs)
                 latest[0] = (rgb, depth, cloud, received)
+                age = time.monotonic() - received
+                if age > 3:
+                    node.get_logger().warning(
+                        f'Prepared camera frame already {age:.1f}s old; '
+                        f'point cloud preparation {cloud.prepare_ms:.1f}ms')
             except Exception as exc:
                 node.get_logger().error('Camera preprocessing failed: ' + str(exc))
     subs = [message_filters.Subscriber(node, typ, topic, qos_profile=10, callback_group=group)
             for typ, topic in [(Image, os.environ.get('RGB_TOPIC', '/vision/top_camera/rgb')), (Image, os.environ.get('DEPTH_TOPIC', '/vision/top_camera/depth')), (PointCloud2, os.environ.get('POINTS_TOPIC', '/vision/top_camera/points'))]]
-    sync = message_filters.ApproximateTimeSynchronizer(subs, 30, 0.08)
+    sync = message_filters.ApproximateTimeSynchronizer(subs, 30, sync_slop_s)
     sync.registerCallback(receive)
     pub = node.create_publisher(String, '/sf_sorting/result', 10)
     def image_array(msg):
@@ -847,10 +912,10 @@ def serve_live(camera_matrix, dist_coeffs):
             try:
                 wait_until = time.monotonic() + 0.1
                 frame = latest[0]
-                while (frame is None or time.monotonic() - frame[3] > 3) and time.monotonic() < wait_until:
+                while (frame is None or time.monotonic() - frame[3] > max_frame_age_s) and time.monotonic() < wait_until:
                     time.sleep(0.02)
                     frame = latest[0]
-                if frame is None or time.monotonic() - frame[3] > 3:
+                if frame is None or time.monotonic() - frame[3] > max_frame_age_s:
                     raise RuntimeError('No fresh synchronized camera frame; retry when camera preprocessing is ready')
                 rgb, depth, points, received = frame
                 frame_age_ms = round((time.monotonic() - received) * 1000, 1)
@@ -858,13 +923,14 @@ def serve_live(camera_matrix, dist_coeffs):
                 t_parse = time.perf_counter()
                 bgr, dep, xyz = image_array(rgb), image_array(depth), points
                 parse_ms = round((time.perf_counter() - t_parse) * 1000, 1)
-                label, box, center = run_detection(bgr, dep, xyz, camera_matrix, dist_coeffs)
+                label, box, center, waybill_dict = run_detection(bgr, dep, xyz, camera_matrix, dist_coeffs)
                 ok = box is not None and center is not None
                 if ok and (np.shape(box) != (8, 3) or not np.isfinite(box).all() or not np.isfinite(center).all()):
                     raise ValueError('Invalid cuboid or center')
                 result = {'success': ok, 'best_label': label,
                           'center_world': center.tolist() if ok else None,
-                          'box_8pts_world': box.tolist() if ok else None}
+                          'box_8pts_world': box.tolist() if ok else None,
+                          'waybill_dict': waybill_dict}
                 result['timing'] = dict(_LAST_TIMING, preprocess_ms=xyz.prepare_ms, frame_age_ms=frame_age_ms, parse_ms=parse_ms, wait_frame_ms=round((t_parse-started)*1000, 1))
                 response.success = ok
             except Exception as exc:

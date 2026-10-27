@@ -15,7 +15,8 @@ def _box_polygon(xyxy: list[float]) -> list[list[float]]:
 _MODEL = None
 
 def get_model(model_name=None):
-    model_name = model_name or os.environ.get('MODEL_PATH', '/assets/packet_best.pt')
+    if not model_name or model_name == 'packet_best.pt':
+        model_name = os.environ.get('MODEL_PATH', '/assets/packet_best.pt')
     global _MODEL
     if _MODEL is None:
         if not os.path.exists(model_name):

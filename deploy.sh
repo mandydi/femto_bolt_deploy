@@ -8,7 +8,12 @@ CAMERA_IMAGE="${CAMERA_IMAGE:-orbbec-femto-bolt:camera-local}"
 SORTING_IMAGE="${SORTING_IMAGE:-orbbec-femto-bolt:sorting-local}"
 CAMERA_CONTAINER="${CAMERA_CONTAINER:-femto-camera}"
 SORTING_CONTAINER="${SORTING_CONTAINER:-femto-sorting}"
-DOMAIN="${ROS_DOMAIN_ID:-0}"
+if [[ -n "${ROS_DOMAIN_ID:-}" ]]; then
+    DOMAIN="$ROS_DOMAIN_ID"
+else
+    DOMAIN="$(docker inspect -f '{{range .Config.Env}}{{println .}}{{end}}' "$CAMERA_CONTAINER" 2>/dev/null | sed -n 's/^ROS_DOMAIN_ID=//p' | head -1 || true)"
+    DOMAIN="${DOMAIN:-0}"
+fi
 ASSETS="${ASSETS_DIR:-$ROOT/assets}"
 CONFIG="${CONFIG_DIR:-$ROOT/config}"
 fail() { echo "ERROR: $*" >&2; exit 1; }
@@ -101,28 +106,58 @@ case "${1:-help}" in
     server)
         case "${2:-status}" in
             start)
-                check_runtime
                 require_new_container "$SORTING_CONTAINER"
-                "${D[@]}" run -d --name "$SORTING_CONTAINER" --restart unless-stopped \
+                diagnostic=false
+                server_config="$CONFIG"
+                server_restart=unless-stopped
+                extra_env=()
+                if [[ "${3:-}" == --diagnostic ]]; then
+                    diagnostic=true
+                    server_restart=no
+                    server_config="$ROOT/private/server-diagnostic/config"
+                    capture_dir="$ROOT/private/server-diagnostic/capture"
+                    mkdir -p "$capture_dir" "$server_config"
+                    "${D[@]}" ps --format '{{.Names}}' | grep -qx "$CAMERA_CONTAINER" || fail 'Camera container must be running for diagnostic start'
+                    "${D[@]}" run --rm --network host --ipc host -e "ROS_DOMAIN_ID=$DOMAIN" -e ROS_LOCALHOST_ONLY=0 \
+                      -v "$ROOT/tools/capture_frame.py:/tmp/capture_frame.py:ro" -v "$capture_dir:/capture" \
+                      "$SORTING_IMAGE" python3 /tmp/capture_frame.py \
+                      --output /capture/rgb.jpg --info /capture/camera-info.json > "$ROOT/private/server-diagnostic/capture.log"
+                    python3 tools/make_test_calibration.py "$capture_dir/camera-info.json" "$server_config/calibration.json"
+                    extra_env=(-e MAX_FRAME_AGE_SEC=10 -e CLOUD_STRIDE=8 -e SYNC_SLOP_SEC=0.5 -e DIAGNOSTIC_ONLY=1)
+                else
+                    check_runtime
+                fi
+                "${D[@]}" run -d --name "$SORTING_CONTAINER" --restart "$server_restart" \
                   --log-opt max-size=10m --log-opt max-file=3 --network host --ipc host \
                   -e ROS_DOMAIN_ID="$DOMAIN" -e ROS_LOCALHOST_ONLY=0 \
-                  -e OMP_NUM_THREADS=2 -e OPENBLAS_NUM_THREADS=2 \
-                  -v "$ROOT/runtime:/app:ro" -v "$CONFIG:/config:ro" -v "$ASSETS:/assets:ro" \
+                  -e OMP_NUM_THREADS=2 -e OPENBLAS_NUM_THREADS=2 "${extra_env[@]}" \
+                  -v "$ROOT/runtime:/app:ro" -v "$server_config:/config:ro" -v "$ASSETS:/assets:ro" \
                   -v femto-numba-cache:/tmp/numba -e NUMBA_CACHE_DIR=/tmp/numba \
                   -w /app "$SORTING_IMAGE" python3 SFsorting.py
-                echo 'Container created; use server logs and server client to verify actual readiness.'
+                if "$diagnostic"; then
+                    echo 'DIAGNOSTIC ONLY: camera optical coordinates in mm; old mask is unverified. Do not send results to the robot.'
+                fi
+                echo 'Container created; wait for "live service ready", then use server test or server client.'
                 ;;
-            client|test)
+            test)
+                if "${D[@]}" inspect -f '{{range .Config.Env}}{{println .}}{{end}}' "$SORTING_CONTAINER" 2>/dev/null | grep -qx DIAGNOSTIC_ONLY=1; then
+                    echo 'DIAGNOSTIC ONLY: coordinates below are camera optical mm, not robot/world coordinates.'
+                fi
                 "${D[@]}" run --rm --network host --ipc host -e ROS_DOMAIN_ID="$DOMAIN" -e ROS_LOCALHOST_ONLY=0 \
                   -v "$ROOT/test_sorting_client.py:/tmp/test_sorting_client.py:ro" \
-                  "$SORTING_IMAGE" python3 /tmp/test_sorting_client.py --json
+                  "$SORTING_IMAGE" python3 /tmp/test_sorting_client.py --timeout 15 --call-timeout 120
+                ;;
+            client)
+                "${D[@]}" run --rm --network host --ipc host -e ROS_DOMAIN_ID="$DOMAIN" -e ROS_LOCALHOST_ONLY=0 \
+                  -v "$ROOT/test_sorting_client.py:/tmp/test_sorting_client.py:ro" \
+                  "$SORTING_IMAGE" python3 /tmp/test_sorting_client.py --json --timeout 15 --call-timeout 120
                 ;;
             logs) "${D[@]}" logs --tail 100 -f "$SORTING_CONTAINER" ;;
             status) "${D[@]}" ps -a --filter "name=^/${SORTING_CONTAINER}$" ;;
             stop) "${D[@]}" stop "$SORTING_CONTAINER" ;;
             resume) "${D[@]}" start "$SORTING_CONTAINER" ;;
             remove) "${D[@]}" rm "$SORTING_CONTAINER" ;;
-            *) fail 'server {start|client|test|logs|status|stop|resume|remove}' ;;
+            *) fail 'server {start [--diagnostic]|client|test|logs|status|stop|resume|remove}' ;;
         esac
         ;;
     status) "${D[@]}" ps -a --filter "name=^/${CAMERA_CONTAINER}$" ;;
@@ -130,5 +165,5 @@ case "${1:-help}" in
     stop) "${D[@]}" stop "$CAMERA_CONTAINER" ;;
     resume) "${D[@]}" start "$CAMERA_CONTAINER" ;;
     remove) "${D[@]}" rm "$CAMERA_CONTAINER" ;;
-    *) printf '%s\n' 'deploy.sh prepare ABS_BUNDLE | install | import ABS_BUNDLE | offline-check | build' 'deploy.sh devices | start SERIAL | verify | check | status|logs|stop|resume|remove' 'deploy.sh server start|client|test|status|logs|stop|resume|remove' ;;
+    *) printf '%s\n' 'deploy.sh prepare ABS_BUNDLE | install | import ABS_BUNDLE | offline-check | build' 'deploy.sh devices | start SERIAL | verify | check | status|logs|stop|resume|remove' 'deploy.sh server start [--diagnostic]|client|test|status|logs|stop|resume|remove' ;;
 esac

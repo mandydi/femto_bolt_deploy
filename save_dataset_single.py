@@ -1,174 +1,110 @@
-import rclpy
-from rclpy.node import Node
-from sensor_msgs.msg import Image, CompressedImage, PointCloud2
-from rclpy.qos import QoSProfile, ReliabilityPolicy, DurabilityPolicy
-from cv_bridge import CvBridge
-import cv2
-import numpy as np
-import struct
-import sys
+#!/usr/bin/env python3
+"""Save one timestamp-matched 4K RGB, aligned depth and point-cloud group."""
 import os
+import sys
 import time
+from pathlib import Path
 
-class SingleFrameDatasetSaver(Node):
-    def __init__(self, out_dir):
-        super().__init__('femto_single_dataset_saver')
-        self.out_dir = out_dir
-        self.bridge = CvBridge()
+import cv2
+import message_filters
+import numpy as np
+import rclpy
+from cv_bridge import CvBridge
+from sensor_msgs.msg import Image, PointCloud2
 
-        self.rgb_dir = os.path.join(out_dir, 'rgb')
-        self.depth_dir = os.path.join(out_dir, 'depth')
-        self.point_dir = os.path.join(out_dir, 'point')
 
-        os.makedirs(self.rgb_dir, exist_ok=True)
-        os.makedirs(self.depth_dir, exist_ok=True)
-        os.makedirs(self.point_dir, exist_ok=True)
+def stamp(msg):
+    return msg.header.stamp.sec + msg.header.stamp.nanosec / 1e9
 
-        # Automatically determine next sequence number from existing files
-        existing_frames = []
-        for d in [self.rgb_dir, self.depth_dir, self.point_dir]:
-            if os.path.exists(d):
-                for f in os.listdir(d):
-                    stem = f.split('.')[0]
-                    if stem.isdigit():
-                        existing_frames.append(int(stem))
 
-        self.frame_idx = (max(existing_frames) + 1) if existing_frames else 1
-        self.name_base = f"{self.frame_idx:06d}"
+def point_rows(msg):
+    fields = {field.name: field for field in msg.fields}
+    if any(fields[name].datatype != 7 for name in ('x', 'y', 'z')):
+        raise ValueError('PointCloud2 x/y/z must be FLOAT32')
+    if msg.row_step != msg.width * msg.point_step:
+        raise ValueError('PointCloud2 row padding is not supported by this saver')
+    endian = '>' if msg.is_bigendian else '<'
+    dtype = np.dtype({'names': ['x', 'y', 'z'],
+                      'formats': [endian + 'f4'] * 3,
+                      'offsets': [fields[name].offset for name in ('x', 'y', 'z')],
+                      'itemsize': msg.point_step})
+    return np.frombuffer(msg.data, dtype=dtype, count=msg.width * msg.height)
 
-        self.latest_rgb = None
-        self.latest_depth = None
-        self.latest_points = None
-        self.done = False
 
-        qos = QoSProfile(
-            reliability=ReliabilityPolicy.RELIABLE,
-            durability=DurabilityPolicy.VOLATILE,
-            depth=1
-        )
+def write_ply(msg, path):
+    rows = point_rows(msg)
+    def valid(chunk):
+        xyz = np.column_stack((chunk['x'], chunk['y'], chunk['z']))
+        keep = np.isfinite(xyz).all(axis=1) & (xyz[:, 2] > 0)
+        return xyz[keep].astype('<f4', copy=False)
+    step = 100_000
+    count = sum(len(valid(rows[i:i + step])) for i in range(0, len(rows), step))
+    with open(path, 'wb') as stream:
+        header = (f'ply\nformat binary_little_endian 1.0\nelement vertex {count}\n'
+                  'property float x\nproperty float y\nproperty float z\nend_header\n')
+        stream.write(header.encode('ascii'))
+        for i in range(0, len(rows), step):
+            stream.write(valid(rows[i:i + step]).tobytes())
+    return count
 
-        self.sub_rgb = self.create_subscription(
-            CompressedImage,
-            '/vision/top_camera/color/image_raw/compressed',
-            self.cb_rgb,
-            qos
-        )
-        self.sub_depth = self.create_subscription(
-            Image,
-            '/vision/top_camera/depth',
-            self.cb_depth,
-            qos
-        )
-        self.sub_points = self.create_subscription(
-            PointCloud2,
-            '/vision/top_camera/points',
-            self.cb_points,
-            qos
-        )
-
-        self.get_logger().info(
-            f"Waiting for topics to capture single frame #{self.name_base}..."
-        )
-
-        # Check loop timer
-        self.timer = self.create_timer(0.2, self.check_and_save)
-
-    def cb_rgb(self, msg):
-        self.latest_rgb = msg
-
-    def cb_depth(self, msg):
-        self.latest_depth = msg
-
-    def cb_points(self, msg):
-        self.latest_points = msg
-
-    def check_and_save(self):
-        if self.done:
-            return
-
-        if self.latest_rgb is None or self.latest_depth is None or self.latest_points is None:
-            return
-
-        self.done = True
-        t_start = time.time()
-        print(f"\n[INFO] Starting single frame save for #{self.name_base}...", flush=True)
-
-        # 1. Save 4K RGB
-        try:
-            np_arr = np.frombuffer(self.latest_rgb.data, np.uint8)
-            img = cv2.imdecode(np_arr, cv2.IMREAD_COLOR)
-            rgb_path = os.path.join(self.rgb_dir, f"{self.name_base}.png")
-            cv2.imwrite(rgb_path, img)
-            try: os.chmod(rgb_path, 0o666)
-            except Exception: pass
-            rgb_shape = img.shape
-        except Exception as e:
-            self.get_logger().error(f"Failed to save RGB: {e}")
-            self.done = False
-            return
-
-        # 2. Save 16-bit D2C Depth
-        try:
-            depth_img = self.bridge.imgmsg_to_cv2(self.latest_depth, desired_encoding='passthrough')
-            depth_path = os.path.join(self.depth_dir, f"{self.name_base}.png")
-            cv2.imwrite(depth_path, depth_img)
-            try: os.chmod(depth_path, 0o666)
-            except Exception: pass
-            depth_shape = depth_img.shape
-        except Exception as e:
-            self.get_logger().error(f"Failed to save Depth: {e}")
-            self.done = False
-            return
-
-        # 3. Save 3D PointCloud (ASCII PLY)
-        try:
-            msg = self.latest_points
-            point_step = msg.point_step
-            data = msg.data
-            points = []
-            for i in range(0, len(data), point_step):
-                x, y, z = struct.unpack_from('fff', data, i)
-                if not (np.isnan(x) or np.isnan(y) or np.isnan(z) or (x == 0 and y == 0 and z == 0)):
-                    points.append((x, y, z))
-
-            ply_path = os.path.join(self.point_dir, f"{self.name_base}.ply")
-            with open(ply_path, 'w') as f:
-                f.write(f"ply\nformat ascii 1.0\nelement vertex {len(points)}\nproperty float x\nproperty float y\nproperty float z\nend_header\n")
-                for p in points:
-                    f.write(f"{p[0]:.4f} {p[1]:.4f} {p[2]:.4f}\n")
-            try: os.chmod(ply_path, 0o666)
-            except Exception: pass
-        except Exception as e:
-            self.get_logger().error(f"Failed to save PointCloud: {e}")
-            self.done = False
-            return
-
-        elapsed = time.time() - t_start
-        print(f"=========================================================", flush=True)
-        print(f"[SUCCESS] Single frame #{self.name_base} saved successfully! (Time cost: {elapsed:.2f}s)", flush=True)
-        print(f"  - RGB:   rgb/{self.name_base}.png ({rgb_shape[1]}x{rgb_shape[0]})", flush=True)
-        print(f"  - Depth: depth/{self.name_base}.png ({depth_shape[1]}x{depth_shape[0]} 16-bit D2C)", flush=True)
-        print(f"  - Point: point/{self.name_base}.ply ({len(points):,} points)", flush=True)
-        print(f"=========================================================", flush=True)
-
-        # Trigger exit
-        sys.exit(0)
 
 def main():
-    out_dir = sys.argv[1] if len(sys.argv) > 1 else '/home/caseim/yolo26_packet/captured_frame'
+    if len(sys.argv) != 3 or not (sys.argv[2].isdigit() and len(sys.argv[2]) == 6):
+        raise SystemExit('Usage: save_dataset_single.py OUTPUT_DIR SIX_DIGIT_INDEX')
+    root, index = Path(sys.argv[1]), sys.argv[2]
+    for folder in ('rgb', 'depth', 'point'):
+        (root / folder).mkdir(parents=True, exist_ok=True)
     rclpy.init()
-    node = SingleFrameDatasetSaver(out_dir)
+    node = rclpy.create_node('femto_single_frame_saver')
+    matched = [None]
+    topics = ((Image, '/vision/top_camera/rgb'),
+              (Image, '/vision/top_camera/depth'),
+              (PointCloud2, '/vision/top_camera/points'))
+    subs = [message_filters.Subscriber(node, typ, topic, qos_profile=10)
+            for typ, topic in topics]
+    sync = message_filters.ApproximateTimeSynchronizer(subs, 30, 0.5)
+    sync.registerCallback(lambda rgb, depth, points: matched.__setitem__(0, (rgb, depth, points)))
+    deadline = time.monotonic() + 30
     try:
-        rclpy.spin(node)
-    except (SystemExit, KeyboardInterrupt):
-        pass
+        while matched[0] is None and time.monotonic() < deadline:
+            rclpy.spin_once(node, timeout_sec=0.2)
+        if matched[0] is None:
+            raise RuntimeError('No RGB/depth/point-cloud group within 500 ms in 30 seconds')
     finally:
-        try:
-            node.destroy_node()
-            if rclpy.ok():
-                rclpy.shutdown()
-        except Exception:
-            pass
+        node.destroy_node()
+        rclpy.shutdown()
+    rgb_msg, depth_msg, points_msg = matched[0]
+    stamps = [stamp(msg) for msg in matched[0]]
+    if max(stamps) - min(stamps) > 0.5:
+        raise RuntimeError('Captured frames are not timestamp-matched')
+    bridge = CvBridge()
+    rgb = bridge.imgmsg_to_cv2(rgb_msg, desired_encoding='bgr8')
+    depth = bridge.imgmsg_to_cv2(depth_msg, desired_encoding='passthrough')
+    if rgb.shape[:2] != (2160, 3840) or depth.shape[:2] != (2160, 3840) or depth.dtype != np.uint16:
+        raise ValueError(f'Unexpected RGB/depth shape or dtype: {rgb.shape}, {depth.shape}, {depth.dtype}')
+    destinations = [root / 'rgb' / f'{index}.png',
+                    root / 'depth' / f'{index}.png',
+                    root / 'point' / f'{index}.ply']
+    temporary = [path.with_name(path.stem + '.tmp' + path.suffix) for path in destinations]
+    try:
+        if not cv2.imwrite(str(temporary[0]), rgb):
+            raise RuntimeError('RGB PNG write failed')
+        if not cv2.imwrite(str(temporary[1]), depth):
+            raise RuntimeError('Depth PNG write failed')
+        count = write_ply(points_msg, temporary[2])
+        if count == 0:
+            raise RuntimeError('Point cloud has no valid points')
+        for src, dest in zip(temporary, destinations):
+            os.replace(src, dest)
+            if 'CAPTURE_UID' in os.environ:
+                os.chown(dest, int(os.environ['CAPTURE_UID']), int(os.environ['CAPTURE_GID']))
+    finally:
+        for path in temporary:
+            path.unlink(missing_ok=True)
+    print(f'SAVED {index}: RGB {rgb.shape[1]}x{rgb.shape[0]}, '
+          f'depth {depth.shape[1]}x{depth.shape[0]} {depth.dtype}, '
+          f'cloud {count} points; timestamp spread {max(stamps)-min(stamps):.3f}s', flush=True)
+
 
 if __name__ == '__main__':
     main()
