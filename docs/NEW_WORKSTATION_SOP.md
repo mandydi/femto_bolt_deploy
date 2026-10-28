@@ -31,6 +31,8 @@ bash deploy.sh prepare "$PWD/private/femto-YYYYMMDD"
 
 需要留存现场输入时，运行 `bash save_head_camera.sh`。它从当前 `femto-camera` 的 ROS 域订阅一组三路时间戳相差不超过 500 ms 的消息，保存到仓库内 `captured_frame/{rgb,depth,point}/`。RGB 和深度为 PNG，点云为二进制 PLY；文件写入、尺寸和点数检查都通过后才打印 `SUCCESS`。这是静态现场采样，不是运动中抓取的同步验收。
 
+相机热插拔后若 RViz 有画面但 `server client` 报 `No fresh synchronized camera frame`，先用 `bash deploy.sh verify` 确认三路话题仍有数据。分拣进程在已有同步帧停止更新超过 45 秒时会自行退出，由 Docker 重新启动并重建 ROS 订阅；可用 `bash deploy.sh server logs` 查看这条恢复记录。诊断模式返回的坐标仍是相机坐标，不能下发给机器人。
+
 ### 未标定时先验证 SORTING 通信链路
 
 当新工位外参和 mask 尚未完成，可显式启动隔离的相机坐标诊断服务：

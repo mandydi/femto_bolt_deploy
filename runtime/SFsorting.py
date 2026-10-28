@@ -847,6 +847,9 @@ def serve_live(camera_matrix, dist_coeffs):
     sync_slop_s = float(os.environ.get('SYNC_SLOP_SEC', '0.08'))
     if not np.isfinite(sync_slop_s) or not 0 < sync_slop_s <= 1:
         raise ValueError('SYNC_SLOP_SEC must be in (0, 1]')
+    sync_stall_restart_s = float(os.environ.get('SYNC_STALL_RESTART_SEC', '45'))
+    if not np.isfinite(sync_stall_restart_s) or sync_stall_restart_s <= max_frame_age_s:
+        raise ValueError('SYNC_STALL_RESTART_SEC must exceed MAX_FRAME_AGE_SEC')
     parser = argparse.ArgumentParser()
     parser.add_argument('--mode', choices=['service'], default='service')
     parser.parse_args()
@@ -856,6 +859,7 @@ def serve_live(camera_matrix, dist_coeffs):
     lock = threading.Lock()
     foreground = threading.Event()
     latest = [None]
+    last_prepared = [None]
     pending = [None]
     wake = threading.Event()
     def receive(rgb, depth, points):
@@ -874,6 +878,7 @@ def serve_live(camera_matrix, dist_coeffs):
                 rgb, depth, points, received = frame
                 cloud = PreparedCloud(cloud_array(points)[::cloud_stride], camera_matrix, dist_coeffs)
                 latest[0] = (rgb, depth, cloud, received)
+                last_prepared[0] = time.monotonic()
                 age = time.monotonic() - received
                 if age > 3:
                     node.get_logger().warning(
@@ -881,6 +886,18 @@ def serve_live(camera_matrix, dist_coeffs):
                         f'point cloud preparation {cloud.prepare_ms:.1f}ms')
             except Exception as exc:
                 node.get_logger().error('Camera preprocessing failed: ' + str(exc))
+    def restart_on_stalled_sync():
+        # A camera hotplug can leave an existing DDS subscription silent even
+        # while fresh subscribers receive all three topics. Restart this
+        # process so Docker recreates the subscriptions from scratch.
+        while rclpy.ok():
+            time.sleep(5)
+            prepared = last_prepared[0]
+            if prepared is not None and not foreground.is_set() and time.monotonic() - prepared > sync_stall_restart_s:
+                node.get_logger().error(
+                    f'No prepared synchronized frame for {time.monotonic() - prepared:.1f}s; '
+                    'restarting sorting process to rebuild ROS subscriptions')
+                os._exit(75)
     subs = [message_filters.Subscriber(node, typ, topic, qos_profile=10, callback_group=group)
             for typ, topic in [(Image, os.environ.get('RGB_TOPIC', '/vision/top_camera/rgb')), (Image, os.environ.get('DEPTH_TOPIC', '/vision/top_camera/depth')), (PointCloud2, os.environ.get('POINTS_TOPIC', '/vision/top_camera/points'))]]
     sync = message_filters.ApproximateTimeSynchronizer(subs, 30, sync_slop_s)
@@ -962,6 +979,8 @@ def serve_live(camera_matrix, dist_coeffs):
     select_projected(np.ones((4, 3), dtype=np.float64), np.ones((4, 1, 2), dtype=np.float64), np.ones((16,16), dtype=np.uint8), -np.inf, np.inf)
     worker = threading.Thread(target=prepare_frames, daemon=True)
     worker.start()
+    watchdog = threading.Thread(target=restart_on_stalled_sync, daemon=True)
+    watchdog.start()
     # Do not advertise readiness before the first synchronized input is prepared.
     warm_deadline = time.monotonic() + 30
     while latest[0] is None and time.monotonic() < warm_deadline and rclpy.ok():

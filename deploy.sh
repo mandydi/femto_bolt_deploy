@@ -113,7 +113,7 @@ case "${1:-help}" in
                 extra_env=()
                 if [[ "${3:-}" == --diagnostic ]]; then
                     diagnostic=true
-                    server_restart=no
+                    server_restart=unless-stopped
                     server_config="$ROOT/private/server-diagnostic/config"
                     capture_dir="$ROOT/private/server-diagnostic/capture"
                     mkdir -p "$capture_dir" "$server_config"
