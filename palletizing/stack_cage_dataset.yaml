@@ -1,0 +1,7 @@
+path: D:/sf_pic/02_模型训练与结果/stack_cage_dataset_v2
+train: images/train
+val: images/val
+
+names:
+  0: stack
+  1: cage

@@ -1,0 +1,18 @@
+# 8002 机器 4路 USB 高清相机硬件拓扑永久固定软链接规则
+# 基于 Linux USB 物理拓扑端口 (by-path) 绝对死锁绑定
+# 说明: 8002 机器 1号相机未安装，按要求保留编号槽位并留空
+
+# 1号相机: 底部/低位相机 (8002 留空未安装)
+# SUBSYSTEM=="video4linux", KERNELS=="...", ATTR{index}=="0", SYMLINK+="camera_1"
+
+# 2号相机: 侧面俯视滑槽相机 (USB 1-6)
+SUBSYSTEM=="video4linux", KERNELS=="1-6:1.0", ATTR{index}=="0", SYMLINK+="camera_2"
+
+# 3号相机: 正视传送带纸箱相机 (USB 1-1)
+SUBSYSTEM=="video4linux", KERNELS=="1-1:1.0", ATTR{index}=="0", SYMLINK+="camera_3"
+
+# 4号相机: 侧视传送带相机 (USB 1-5)
+SUBSYSTEM=="video4linux", KERNELS=="1-5:1.0", ATTR{index}=="0", SYMLINK+="camera_4"
+
+# 5号相机: 传送带/滑槽近景相机 (USB 1-3)
+SUBSYSTEM=="video4linux", KERNELS=="1-3:1.0", ATTR{index}=="0", SYMLINK+="camera_5"

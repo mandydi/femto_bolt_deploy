@@ -1,12 +1,85 @@
-# Femto Bolt 相机与八点分拣服务部署
+# SF-Vision: 顺丰物流视觉感知与机器人协同系统 (码垛与分拣)
 
-本仓库的部署入口为 `deploy.sh`。2026-10-26 根据 **8001 正在运行的环境**重新整理，见 [基线与验证记录](docs/DEPLOYMENT_BASELINE.md)。
+本仓库整合了顺丰智慧物流场景下两大核心视觉业务模块——**智能码垛（Palletizing/Depalletizing）** 与 **高速分拣（Sorting）** 的视觉算法、标定管线、工控机部署服务与相机硬件驱动。
 
-新设备按 [固定部署与接相机验收流程](docs/NEW_WORKSTATION_SOP.md) 执行。私有包放入仓库内被 Git 忽略的 `private/femto-YYYYMMDD/` 后，可运行 `bash deploy.sh prepare "$PWD/private/femto-YYYYMMDD"` 一次完成安装、导入和离线检查。
+---
 
-新机未标定时先用 `bash deploy.sh server start --diagnostic`、`bash deploy.sh server client` 验证相机到分拣服务的回包；返回的坐标仅在相机系，不能交给机器人。现场三路静态采样可运行 `bash save_head_camera.sh`。另接的 Fic760x USB 相机可运行 `bash save_usb_camera.sh`，保存 4000×3000 JPEG 到 `captured_usb_camera/`；脚本会先关闭占用设备的 Cheese。
+## 目录结构与模块说明
 
-它部署相机和视觉服务，不连接机器人、不发送动作。输入为彩色/深度/点云，输出为包裹类别、中心及八个三维顶点。**代码可从 GitHub 获取；模型、镜像和现场资产通过私有迁移包传递，不存入公开仓库。克隆仓库不是完整部署。**
+```text
+sf-vision/
+├── palletizing/                     # 【码垛场景】笼车、托盘与包裹垛型视觉处理
+│   ├── infer_seg_depth_demo.py      # 点云与深度图融合分割推理演示（YOLO-seg + 深度切片）
+│   └── stack_cage_dataset.yaml      # 笼车/垛型多目标检测与分割数据集配置
+│
+├── sorting/                         # 【分拣场景】高速供包台/分拣工作站视觉服务
+│   ├── SFsorting.py                 # 当前生产级分拣算法服务（含三级点云缓存、长驻常驻模型、吸附点解算）
+│   ├── SFsorting_fusion_1105.py     # 深度/彩色融合与双相机多模态位姿解算
+│   └── history/                     # 历史版本追溯 (SFsorting_1022.py, SFsorting_minimal_qr_1026.py)
+│
+├── calibration/                     # 【标定模块】手眼标定与外参系统
+│   ├── setup_calibration_pipeline.py# 标定管线配置与环境准备
+│   ├── run_pipeline_1105.py         # 10分钟自动化标定执行脚本（支持无序点阵自动拓扑重构）
+│   ├── generate_1105_job.py         # 标定作业配置与标定板位姿生成
+│   ├── verify_1105.cpp              # C++ 高性能重投影与几何一致性验证
+│   └── Launch-GUI.ps1               # 标定辅助交互 GUI 启动脚本
+│
+├── hardware/                        # 【相机与硬件接口】
+│   ├── camera_id_api.py             # 多路 USB/工业相机持久化拓扑与序列号映射 API
+│   ├── barcode_engine.py            # 高分辨率面单条码与二维码解码引擎
+│   ├── sweep_cam3_focus_full.py     # 相机对焦及多档分辨率（高达 4000x3000）扫描测试工具
+│   ├── usb_camera_manager.py        # USB 相机生命周期与守护进程管理
+│   ├── usb_scan_service.py          # 独立扫码子服务
+│   └── udev/                        # Linux udev 静态端口绑定规则 (99-usb-cameras.rules 等)
+│
+├── config/                          # 【运行配置】
+│   ├── cameras.json                 # 多相机内参、视场角参数与拓扑配置文件
+│   └── calibration.example.json     # 标定矩阵与世界坐标转换模板
+│
+├── docs/                            # 【技术方案与标准作业程序 (SOP)】
+│   ├── 分拣系统坐标转换与流程设计.md # 机器人坐标系、相机坐标系与吸附点解算标准文档
+│   ├── 分拣脚本更新工作流.md         # 算法热更新、版本回退与生产测试验证规范
+│   ├── NEW_WORKSTATION_SOP.md       # 新工位部署 SOP
+│   └── DEPLOYMENT_BASELINE.md       # 生产环境基线参数与软硬件依赖
+│
+├── deploy.sh                        # Docker 容器化一键部署与服务管理入口
+└── runtime/                         # 容器运行期挂载脚本与核心入口
+```
+
+---
+
+## 核心业务场景与技术架构
+
+### 1. 智能码垛场景 (Palletizing)
+- **视觉目标**：识别装笼、托盘及垛位中的不同规格包裹，提取表面点云几何平面，计算最优抓取吸附位姿。
+- **专用模型**：训练 `stack_cage_yolo26n` 针对高反光编织袋、笼车网格边缘进行针对性分割，实现 mAP50 99.5% 高可靠度识别。
+- **相机选型**：顶置大视场深度相机（Femto Bolt）获取全局垛型点云，辅以高分辨率面单扫码相机识别运单信息。
+
+### 2. 高速分拣场景 (Sorting)
+- **视觉目标**：实时处理来料包裹，返回分类类别、包裹三维中心坐标以及 8 顶点三维轮廓 (`box_8pts_world`)。
+- **性能优化**：
+  - **三级点云缓存机制**：内存高速缓存 (`_PLY_CACHE`) -> 磁盘降采样体素缓存 (`.voxel{mm}.npy`) -> 原始点云异步加载，彻底消除大点云引起的工控机内存崩溃与服务超时。
+  - **常驻模型预热**：彻底解决每次请求重新加载 YOLO 带来的 6-7 秒服务卡顿。
+  - **背景抗干扰优化**：通过更换专用哑光对比度工作台画布，消除边界反射噪点；结合收缩掩膜点云切片 (`get_shrunk_mask_prism_fit_plane`) 杜绝多包裹粘连引起的点云收敛误差。
+
+### 3. 工业级手眼与外参标定 (Calibration)
+- **自动化管线**：沉淀 10 分钟快速标定流程，摆脱传统手工逐点复核。
+- **双臂交叉验证**：双机械臂分别标定固定相机，解算相机绝对坐标，Z 轴误差仅 1.0mm，X 轴误差仅 1.1mm，达到工业级装配与吸附精度。
+
+---
+
+## 快速部署与使用
+
+本仓库部署入口为 `deploy.sh`，基于 Docker 容器化环境运行：
+```bash
+# 启动相机与视觉分拣服务
+bash deploy.sh start <CAMERA_SERIAL>
+bash deploy.sh server start
+
+# 运行客户端测试视觉反馈数据
+bash deploy.sh server client
+```
+详细配置与故障排查请参阅 [docs/NEW_WORKSTATION_SOP.md](docs/NEW_WORKSTATION_SOP.md)。
 
 ## 推荐：离线迁移到新工控机
 
