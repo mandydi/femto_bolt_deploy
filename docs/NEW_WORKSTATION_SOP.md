@@ -11,8 +11,8 @@
 ## 新机一次性部署
 
 ```bash
-git clone https://github.com/mandydi/femto_bolt_deploy.git
-cd femto_bolt_deploy
+git clone http://gkjs.synology.me:5080/sf-express/sf-vision.git
+cd sf-vision
 # 从移动硬盘复制私有包到 ./private/femto-YYYYMMDD/，检查含 SHA256SUMS、images.tar.gz、assets/
 bash deploy.sh prepare "$PWD/private/femto-YYYYMMDD"
 ```

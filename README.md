@@ -1,6 +1,6 @@
 # SF-Vision: 顺丰物流视觉感知与机器人协同系统 (码垛与分拣)
 
-本仓库整合了顺丰智慧物流场景下两大核心视觉业务模块——**智能码垛（Palletizing/Depalletizing）** 与 **高速分拣（Sorting）** 的视觉算法、标定管线、工控机部署服务与相机硬件驱动。
+本仓库整合了顺丰智慧物流场景下两大核心视觉业务模块——**智能码垛（Palletizing/Depalletizing）** 与 **高速分拣（Sorting）** 的视觉算法、工控机部署服务与相机硬件驱动。
 
 ---
 
@@ -16,13 +16,6 @@ sf-vision/
 │   ├── SFsorting.py                 # 当前生产级分拣算法服务（含三级点云缓存、长驻常驻模型、吸附点解算）
 │   ├── SFsorting_fusion_1105.py     # 深度/彩色融合与双相机多模态位姿解算
 │   └── history/                     # 历史版本追溯 (SFsorting_1022.py, SFsorting_minimal_qr_1026.py)
-│
-├── calibration/                     # 【标定模块】手眼标定与外参系统
-│   ├── setup_calibration_pipeline.py# 标定管线配置与环境准备
-│   ├── run_pipeline_1105.py         # 10分钟自动化标定执行脚本（支持无序点阵自动拓扑重构）
-│   ├── generate_1105_job.py         # 标定作业配置与标定板位姿生成
-│   ├── verify_1105.cpp              # C++ 高性能重投影与几何一致性验证
-│   └── Launch-GUI.ps1               # 标定辅助交互 GUI 启动脚本
 │
 ├── hardware/                        # 【相机与硬件接口】
 │   ├── camera_id_api.py             # 多路 USB/工业相机持久化拓扑与序列号映射 API
@@ -61,10 +54,6 @@ sf-vision/
   - **三级点云缓存机制**：内存高速缓存 (`_PLY_CACHE`) -> 磁盘降采样体素缓存 (`.voxel{mm}.npy`) -> 原始点云异步加载，彻底消除大点云引起的工控机内存崩溃与服务超时。
   - **常驻模型预热**：彻底解决每次请求重新加载 YOLO 带来的 6-7 秒服务卡顿。
   - **背景抗干扰优化**：通过更换专用哑光对比度工作台画布，消除边界反射噪点；结合收缩掩膜点云切片 (`get_shrunk_mask_prism_fit_plane`) 杜绝多包裹粘连引起的点云收敛误差。
-
-### 3. 工业级手眼与外参标定 (Calibration)
-- **自动化管线**：沉淀 10 分钟快速标定流程，摆脱传统手工逐点复核。
-- **双臂交叉验证**：双机械臂分别标定固定相机，解算相机绝对坐标，Z 轴误差仅 1.0mm，X 轴误差仅 1.1mm，达到工业级装配与吸附精度。
 
 ---
 
@@ -105,8 +94,8 @@ bash tools/export_8001.sh /home/caseim/deployment_exports/femto-YYYYMMDD --image
 ### 2. 在新工控机安装并导入
 
 ```bash
-git clone https://github.com/mandydi/femto_bolt_deploy.git
-cd femto_bolt_deploy
+git clone http://gkjs.synology.me:5080/sf-express/sf-vision.git
+cd sf-vision
 bash deploy.sh install
 bash deploy.sh import /absolute/path/to/femto-YYYYMMDD
 bash deploy.sh devices
